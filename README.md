@@ -1,29 +1,148 @@
 # Multiverse Dive
 
-A cloud-native, agent-orchestrated geospatial event intelligence platform.
+**Geospatial event intelligence platform that converts (area, time window, event type) into decision products.**
 
-## Overview
+## What This Does
 
-Multiverse Dive transforms an area, time window, and event type into complete, reproducible decision products within hours. The platform autonomously discovers multi-sensor earth observation data, assembles validated analytical pipelines, performs quality checks, and publishes both machine-readable datasets and human-readable reports with full provenance.
+When a flood, wildfire, or storm happens, decision-makers need answers fast: *Where exactly is affected? How severe? What's the uncertainty?* Getting those answers typically requires specialists to manually find satellite data, run analyses, validate results, and produce reports—a process that takes days.
 
-## Key Capabilities
+Multiverse Dive automates this entire pipeline. You provide:
+- A geographic area (polygon or bounding box)
+- A time window (start/end dates)
+- An event type ("coastal flood", "forest fire", "hurricane damage")
 
-- **Situation-agnostic**: Structured event specifications allow the same agents and pipelines to handle floods, wildfires, storms, and other hazards
-- **Autonomous data discovery**: Multi-source broker for optical, SAR, DEM, weather, and ancillary data with preference for open sources
-- **Intelligent sensor selection**: Atmospheric-aware switching between optical and SAR, multi-sensor fusion, degraded mode handling
-- **Dynamic pipeline assembly**: Algorithm selection based on data availability and constraints with hybrid rule-based and ML approaches
-- **Quality control**: Automated plausibility checks, cross-validation, uncertainty quantification, and consensus generation
-- **Full provenance**: Complete lineage tracking from source data through final products
+The system autonomously:
+1. **Discovers** the best available satellite imagery (Sentinel-1 SAR, Sentinel-2 optical, Landsat, MODIS, DEMs, weather data)
+2. **Selects** appropriate algorithms based on what data is available and cloud conditions
+3. **Processes** multi-sensor fusion with proper atmospheric and terrain corrections
+4. **Validates** results through cross-sensor comparison and plausibility checks
+5. **Produces** GeoTIFF maps, GeoJSON vectors, uncertainty layers, and human-readable reports
 
-## Documentation
+All with complete provenance—every output traces back to source data and processing steps.
 
-- [OpenSpec](OPENSPEC.md) - Full system specification and design
+## Why This Matters
 
-## Tech Stack
+**Speed**: Hours instead of days for initial situational awareness.
 
-- Python + FastAPI
-- JSON Schema + YAML specifications
-- Serverless-first deployment
+**Consistency**: Same methodology applied regardless of who requests the analysis.
+
+**Transparency**: Full audit trail from raw data to final product.
+
+**Scalability**: Handle multiple concurrent events without bottlenecks.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Event Request                           │
+│              (area + time window + event type)                  │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Intent Resolution                          │
+│         NLP + taxonomy lookup → structured event class          │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       Data Discovery                            │
+│    Query STAC catalogs, OGC services, provider APIs             │
+│    Rank by: availability, cloud cover, resolution, cost         │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Algorithm Selection                         │
+│    Match algorithms to available data + event type              │
+│    SAR threshold, NDWI, change detection, HAND model, etc.      │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Pipeline Execution                           │
+│    Ingest → normalize → fuse → analyze → validate               │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Quality Control                            │
+│    Sanity checks, cross-validation, uncertainty quantification  │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Products                                 │
+│    GeoTIFF, GeoJSON, PDF report, provenance record              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+multiverse_dive/
+├── core/                    # Core processing logic
+│   ├── intent/              # Event type classification and resolution
+│   ├── data/                # Data discovery, providers, and ingestion
+│   └── analysis/            # Algorithm library and pipeline assembly
+├── openspec/                # Specification layer
+│   ├── schemas/             # JSON Schema definitions
+│   └── definitions/         # YAML event classes, algorithms, data sources
+├── agents/                  # Autonomous agent implementations
+├── api/                     # FastAPI REST interface
+├── tests/                   # Test suites
+└── examples/                # Example event specifications
+```
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -e .
+
+# Run tests
+PYTHONPATH=. .venv/bin/pytest tests/ -v
+
+# Example: process a flood event (API not yet implemented)
+# curl -X POST http://localhost:8000/events \
+#   -H "Content-Type: application/yaml" \
+#   --data-binary @examples/flood_event.yaml
+```
+
+## Current Status
+
+- **Groups A-E Complete**: Schemas, validation, intent resolution, data discovery, baseline algorithms
+- **Group F Next**: Intelligent selection systems (constraint evaluation, multi-criteria ranking)
+- **16 Known Bugs**: Tracked in [FIXES.md](FIXES.md), being addressed incrementally
+
+See [ROADMAP.md](ROADMAP.md) for detailed implementation progress.
+
+## Key Documents
+
+| Document | Purpose |
+|----------|---------|
+| [OPENSPEC.md](OPENSPEC.md) | Complete system design specification |
+| [ROADMAP.md](ROADMAP.md) | Implementation roadmap with parallel work groups |
+| [FIXES.md](FIXES.md) | Known bugs with exact code fixes |
+| [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on this codebase |
+
+## Supported Hazard Types
+
+| Hazard | Algorithms | Status |
+|--------|------------|--------|
+| **Flood** | SAR threshold, NDWI optical, change detection, HAND model | Implemented |
+| **Wildfire** | dNBR burn severity, thermal anomaly, burned area classifier | Implemented |
+| **Storm** | Wind damage detection, structural damage assessment | Implemented |
+
+## Data Sources
+
+The platform queries multiple data sources with preference for open/free data:
+
+- **Optical**: Sentinel-2, Landsat-8/9, MODIS
+- **SAR**: Sentinel-1 (cloud-penetrating radar)
+- **DEM**: Copernicus DEM, SRTM, FABDEM
+- **Weather**: ERA5, GFS, ECMWF
+- **Ancillary**: OpenStreetMap, World Settlement Footprint, land cover
 
 ## License
 

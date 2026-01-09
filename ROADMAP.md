@@ -906,6 +906,64 @@ All agents MUST complete this checklist during the Review phase before marking w
 
 ---
 
+## Documentation Task: Directory READMEs
+
+Each major directory should have a brief, human-readable README explaining its purpose. These can be created incrementally by agents as they work on each area.
+
+### Directories Needing READMEs
+
+| Directory | Purpose | Priority |
+|-----------|---------|----------|
+| `core/` | Core processing logic overview | High |
+| `core/intent/` | Event type classification and NLP resolution | High |
+| `core/data/` | Data discovery, providers, and ingestion | High |
+| `core/data/providers/` | Satellite and ancillary data provider implementations | Medium |
+| `core/data/discovery/` | STAC, WMS/WCS, and API discovery adapters | Medium |
+| `core/analysis/` | Algorithm library and pipeline assembly | High |
+| `core/analysis/library/` | Algorithm registry and baseline implementations | High |
+| `core/analysis/library/baseline/flood/` | Flood detection algorithms | Medium |
+| `core/analysis/library/baseline/wildfire/` | Wildfire/burn area algorithms | Medium |
+| `core/analysis/library/baseline/storm/` | Storm damage algorithms | Medium |
+| `openspec/` | Specification layer overview | High |
+| `openspec/schemas/` | JSON Schema definitions | Medium |
+| `openspec/definitions/` | YAML event classes, algorithms, data sources | Medium |
+| `agents/` | Autonomous agent implementations | Medium |
+| `api/` | FastAPI REST interface | Medium |
+| `tests/` | Test suite organization and conventions | Medium |
+| `examples/` | Example event specifications | Low |
+
+### README Template
+
+Each README should be brief (50-150 words) and include:
+
+```markdown
+# [Directory Name]
+
+**Purpose**: One sentence explaining what this directory contains.
+
+## Contents
+
+- `file1.py` - Brief description
+- `file2.py` - Brief description
+- `subdir/` - Brief description
+
+## Key Concepts
+
+2-3 bullet points explaining the main ideas or patterns used here.
+
+## Usage
+
+Brief example or pointer to where this code is used.
+```
+
+### When to Create
+
+- **During implementation**: When you complete a track, add a README to directories you created
+- **During review**: If reviewing code without a README, add one
+- **Standalone task**: Can be done as a documentation pass between groups
+
+---
+
 ## Advanced Enhancements (Post-Launch Upgrades)
 
 Once the core multiverse is stable, consider these expansion packs:
