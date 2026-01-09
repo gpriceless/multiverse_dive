@@ -175,20 +175,38 @@ $([ "$MODE" = "RESUME" ] && echo "RESUME INSTRUCTIONS:
 
 Throughout your work, announce your progress with your track number:
 echo '[Track ${TRACK}] Reading ROADMAP.md...'
+echo '[Track ${TRACK}] Checking FIXES.md for related bugs...'
 echo '[Track ${TRACK}] Found task: [task name]'
+echo '[Track ${TRACK}] Fixing [FIX-XXX]...'
 echo '[Track ${TRACK}] Implementing [component]...'
 echo '[Track ${TRACK}] Writing [filename]...'
 
 Your mission:
-1. Read ROADMAP.md and find Group ${CURRENT_GROUP}, Track ${TRACK}
-2. $([ "$MODE" = "RESUME" ] && echo "Check what's already done, continue from there" || echo "Mark Track ${TRACK} as 'IN PROGRESS' in ROADMAP.md")
-3. Implement ONLY the items in Track ${TRACK}
-4. Do NOT work on other tracks - other agents are handling those
-5. Announce each step with '[Track ${TRACK}]' prefix
 
-When done: echo '[Track ${TRACK}] Work Agent complete - [what you built]'
+STEP 0: Check FIXES.md for bugs
+   - Read FIXES.md to see documented bugs
+   - Identify P0/P1 bugs in files related to Track ${TRACK}
+   - Fix these bugs AS YOU WORK on related code
+   - Update FIXES.md to mark bugs as [FIXED]
 
-Work efficiently. Other agents are working on other tracks in parallel!
+STEP 1: Read ROADMAP.md and find Group ${CURRENT_GROUP}, Track ${TRACK}
+
+STEP 2: $([ "$MODE" = "RESUME" ] && echo "Check what's already done, continue from there" || echo "Mark Track ${TRACK} as 'IN PROGRESS' in ROADMAP.md")
+
+STEP 3: READ EXISTING CODE before writing new code
+   - Understand patterns used in related modules
+   - Reference larger code sets as you expand
+
+STEP 4: Implement ONLY the items in Track ${TRACK}
+   - Fix any FIXES.md bugs in files you touch
+   - Do NOT work on other tracks
+
+STEP 5: Update FIXES.md for any bugs you fixed
+   - Mark with [FIXED] and brief note
+
+When done: echo '[Track ${TRACK}] Work Agent complete - [what you built] + [N bugs fixed]'
+
+Work efficiently. Reference existing code. Fix bugs as you go!
         " >> "$LOGFILE" 2>&1
 
         EXIT_CODE=$?
@@ -202,18 +220,35 @@ Work efficiently. Other agents are working on other tracks in parallel!
 
 You are reviewing Track ${TRACK} from Group ${CURRENT_GROUP}.
 
-⚠️ IMPORTANT: Use the review checklist from the codebase!
-Look for any review checklist files or guidelines and follow them.
-
 Announce progress with: echo '[Track ${TRACK}] [action]'
 
 Your mission:
-1. Review the code created for Track ${TRACK}
-2. Follow the review checklist (if one exists in the repo)
-3. Fix any issues
-4. Write comprehensive tests for Track ${TRACK} components
-5. Run tests and ensure they pass
-6. Announce: '[Track ${TRACK}] Review complete - [X] tests passing'
+
+STEP 1: Read the Code Review Checklist from ROADMAP.md
+   - Find 'Agent Code Review Checklist' section
+   - This checklist is MANDATORY
+
+STEP 2: Review Track ${TRACK} code against the checklist
+   - Correctness & Safety (division guards, bounds checks, NaN handling)
+   - Consistency (names match across files, defaults match)
+   - Completeness (all features implemented, docstrings, type hints)
+   - Robustness (specific exceptions, thread safety)
+   - Performance (no O(n²) loops, caching)
+   - Security (input validation, no secrets logged)
+   - Maintainability (no magic numbers, no duplication)
+
+STEP 3: Check FIXES.md for remaining bugs
+   - Read FIXES.md for bugs in Track ${TRACK} files
+   - Fix any P0/P1 bugs in code you're reviewing
+   - Update FIXES.md to mark bugs as [FIXED]
+   - Announce: '[Track ${TRACK}] Fixed [FIX-XXX]'
+
+STEP 4: Write comprehensive tests
+   - Unit tests, integration tests, edge cases
+   - Run: PYTHONPATH=. .venv/bin/pytest tests/ -v
+
+STEP 5: Announce completion
+   echo '[Track ${TRACK}] Review complete - [X] tests passing, [Y] bugs fixed'
 
 Do NOT modify code from other tracks.
             " >> "$LOGFILE" 2>&1
@@ -239,9 +274,10 @@ Your mission:
 
    - Description of what was added
    - Key components/files
+   - Bugs fixed: [FIX-XXX, FIX-YYY] (if any)
    - Test results
 
-   Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>'
+   Co-Authored-By: Claude <noreply@anthropic.com>'
 
 4. Announce: '[Track ${TRACK}] Committed (waiting for group sync before push)'
 
