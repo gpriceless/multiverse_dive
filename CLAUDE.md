@@ -23,7 +23,21 @@ Situation-agnostic specifications enable the same agent-orchestrated pipelines t
 
 1. **Check FIXES.md** for any P0 (critical) bugs that must be fixed first
 2. **Check ROADMAP.md** for current progress and what can be parallelized
-3. Run tests: `PYTHONPATH=. .venv/bin/pytest tests/ -v`
+3. Run tests: `./run_tests.py` or `./run_tests.py <category>`
+
+## Test Runner Shortcuts
+
+```bash
+./run_tests.py                    # Run all tests
+./run_tests.py flood              # Flood tests only
+./run_tests.py wildfire           # Wildfire tests only
+./run_tests.py storm              # Storm tests only
+./run_tests.py schemas            # Schema validation tests
+./run_tests.py intent             # Intent resolution tests
+./run_tests.py --algorithm sar    # Specific algorithm (sar, ndwi, hand, dnbr, etc.)
+./run_tests.py wildfire --quick   # Skip slow tests
+./run_tests.py --list             # Show all categories
+```
 
 ## Git Workflow
 
