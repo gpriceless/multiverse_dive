@@ -38,26 +38,29 @@ GROUP C: Intent Resolution Core
 GROUP D:          GROUP E:
 Data Discovery    Algorithm Foundation
     │                 │
-    ↓                 ↓
-GROUP F: Intelligent Selection
-(combines D + E outputs)
-    │
-    ↓
-┌────────┴────────┐
-│                 │
-GROUP G:          GROUP H:
-Ingestion         Fusion & Analysis
-Pipeline          Engine
-    │                 │
-    └────────┬────────┘
-             ↓
-    GROUP I: Quality Control
+    ↓                 ├─────────────────────────────┐
+GROUP F: Intelligent Selection                      │
+(combines D + E outputs)                            │
+    │                                               │
+    ↓                                               ↓
+┌────────┴────────┐                         GROUP L: Lightweight
+│                 │                         Execution & CLI
+GROUP G:          GROUP H:                  (parallel with F-K)
+Ingestion         Fusion & Analysis             │
+Pipeline          Engine                        │
+    │                 │                         │
+    └────────┬────────┘                         │
+             ↓                                  │
+    GROUP I: Quality Control ◄──────────────────┤
+             │                                  │
+             ↓                                  │
+    GROUP J: Agent Orchestration                │
+             │                                  │
+             ↓                                  │
+    GROUP K: API & Deployment ◄─────────────────┘
              │
              ↓
-    GROUP J: Agent Orchestration
-             │
-             ↓
-    GROUP K: API & Deployment
+    [Production Ready: Cloud + Local]
 ```
 
 ---
@@ -748,6 +751,148 @@ The ensemble performs! Agents coordinate autonomously, each handling their speci
 
 **Celebration Checkpoint:** 🌟
 The portal is open! External systems can now submit events, track progress, and retrieve products via clean REST APIs. Webhooks provide real-time updates. Serverless deployment means the platform scales effortlessly with demand.
+
+---
+
+### **Group L: Lightweight Execution & CLI** 💻
+*"Run anywhere, from laptop to cloud"*
+
+**Prerequisites:** Group E complete (needs algorithms); can develop in parallel with Groups F-K
+
+**Motivation:** The platform should work on a low-power laptop processing one tile at a time, not just on cloud servers with unlimited RAM. Users should be able to run incremental workflows from the command line without deploying a full API.
+
+**Parallel Tracks:**
+
+1. **Track 1: Tiled Processing Infrastructure**
+   - `core/execution/tiling.py` - Tile grid generation and management
+   - Define tile schemes (256x256, 512x512, configurable)
+   - Overlap handling for edge effects
+   - Tile coordinate systems (pixel, geo-referenced)
+   - Progress tracking per tile
+
+2. **Track 2: Streaming Data Ingestion**
+   - `core/data/ingestion/streaming.py` - Chunked download and processing
+   - Window-based raster reading (rasterio windowed reads)
+   - Memory-mapped file support for large datasets
+   - Resume capability for interrupted downloads
+   - Bandwidth throttling for constrained networks
+
+3. **Track 3: Algorithm Tiling Adapters**
+   - `core/analysis/execution/tiled_runner.py` - Run algorithms tile-by-tile
+   - Automatic algorithm wrapping for tile processing
+   - Edge artifact handling (overlap, blending)
+   - Result stitching and mosaic generation
+   - Per-tile statistics aggregation
+
+4. **Track 4: Memory-Efficient Algorithms**
+   - Update existing algorithms to support optional chunked mode
+   - `threshold_sar.py` - Add `process_tile()` method
+   - `ndwi_optical.py` - Add windowed NDWI computation
+   - `change_detection.py` - Tile-aware change detection
+   - `hand_model.py` - Chunked DEM processing (critical: currently needs 8GB)
+   - Wildfire/storm algorithms - Add tile support
+
+5. **Track 5: CLI Framework**
+   - `cli/main.py` - Main entry point using Click or Typer
+   - `cli/commands/` - Command modules
+   - Subcommands: `discover`, `ingest`, `analyze`, `validate`, `export`
+   - Progress bars and status output
+   - JSON/YAML output modes for scripting
+
+6. **Track 6: Incremental Workflow Commands**
+   - `cli/commands/discover.py` - Find available data for area/time
+   - `cli/commands/ingest.py` - Download and normalize data (resumable)
+   - `cli/commands/analyze.py` - Run analysis (can specify tile range)
+   - `cli/commands/validate.py` - Run quality checks
+   - `cli/commands/export.py` - Generate outputs (GeoTIFF, GeoJSON, report)
+   - `cli/commands/run.py` - Full pipeline in one command
+
+7. **Track 7: Execution Profiles**
+   - `core/execution/profiles.py` - Predefined resource configurations
+   - `laptop` profile: 2GB RAM, sequential processing, small tiles
+   - `workstation` profile: 8GB RAM, parallel tiles, medium tiles
+   - `cloud` profile: 32GB+ RAM, distributed processing, large tiles
+   - Auto-detection of available resources
+   - User-configurable limits
+
+8. **Track 8: State Persistence**
+   - `core/execution/state.py` - Save/resume workflow state
+   - Checkpoint after each processing stage
+   - SQLite or JSON state files
+   - Resume from last successful step
+   - State inspection commands
+
+9. **Track 9: Local Storage Backend**
+   - `core/data/storage/local.py` - Filesystem-based storage
+   - Organized directory structure for intermediate products
+   - Cleanup utilities for temporary files
+   - Disk space estimation before processing
+   - Works offline after initial data download
+
+10. **Track 10: CLI Tests**
+    - `tests/test_cli.py` - Test all CLI commands
+    - `tests/test_tiling.py` - Test tile processing
+    - `tests/test_streaming.py` - Test chunked ingestion
+    - Integration tests for full incremental workflow
+
+**CLI Usage Examples:**
+
+```bash
+# Discover available data
+mdive discover --area miami.geojson --start 2024-09-15 --end 2024-09-20 --event flood
+
+# Download data incrementally (can Ctrl+C and resume)
+mdive ingest --area miami.geojson --source sentinel1 --output ./data/
+
+# Run analysis on specific tiles (for testing or partial processing)
+mdive analyze --input ./data/ --algorithm sar_threshold --tiles 0-10 --output ./results/
+
+# Run full pipeline with laptop profile
+mdive run --area miami.geojson --event flood --profile laptop --output ./products/
+
+# Check status of interrupted workflow
+mdive status --workdir ./products/
+
+# Resume interrupted workflow
+mdive resume --workdir ./products/
+```
+
+**Deliverables:**
+- Tiled processing infrastructure
+- Memory-efficient algorithm adapters
+- Full CLI with incremental workflow support
+- Execution profiles for different hardware
+- State persistence for resume capability
+- Local storage backend
+
+**Success Criteria:**
+- Full flood analysis runs on 4GB RAM laptop (may be slow, but works)
+- Processing can be interrupted and resumed
+- CLI provides clear progress feedback
+- Each stage can run independently
+- Results match full-memory processing (within floating-point tolerance)
+- `pytest tests/test_cli.py tests/test_tiling.py -v` passes
+
+**Celebration Checkpoint:** 🖥️
+The platform now runs anywhere! From a Raspberry Pi processing one tile at a time to a cloud cluster processing hundreds in parallel, the same codebase adapts. Users can work incrementally, pause and resume, and see exactly what's happening at each step.
+
+---
+
+**Components Requiring Updates for Lightweight Mode:**
+
+The following existing components need modifications to support tiled/lightweight execution:
+
+| Component | Current State | Required Changes |
+|-----------|---------------|------------------|
+| `threshold_sar.py` | Full array (4GB) | Add `process_tile()` method |
+| `ndwi_optical.py` | Full array (4GB) | Add windowed computation |
+| `change_detection.py` | Full array (4GB) | Tile-aware differencing |
+| `hand_model.py` | Full array (8GB) | **Critical**: Chunked DEM, streaming flow accumulation |
+| `thermal_anomaly.py` | Full array (0.5GB) | Add tile support with context window |
+| `wind_damage.py` | Full array (2GB) | Add tile support |
+| `structural_damage.py` | Full array (2GB) | Add tile support |
+| `core/data/broker.py` | Returns full datasets | Add tile-aware queries |
+| `core/analysis/library/registry.py` | No execution | Add tiled execution methods |
 
 ---
 
