@@ -74,44 +74,55 @@ while true; do
     echo -e "${YELLOW}Launching parallel orchestrator...${NC}\n"
 
     # Try --resume first (for IN PROGRESS tracks), then without (for PENDING tracks)
-    if "$ORCHESTRATOR_SCRIPT" --resume >> "$LOGFILE" 2>&1; then
-        echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (resume) completed successfully${NC}"
-        echo "Status: SUCCESS (resume mode)" >> "$LOGFILE"
-    else
-        RESUME_EXIT=$?
-        # Check if resume mode found no tracks
-        if grep -q "No unclaimed tracks available" "$LOGFILE" | tail -5; then
-            echo -e "${YELLOW}No IN PROGRESS tracks, trying NEW tracks...${NC}"
-            echo "Resume mode: No IN PROGRESS tracks found, trying NEW mode" >> "$LOGFILE"
+    "$ORCHESTRATOR_SCRIPT" --resume >> "$LOGFILE" 2>&1
+    RESUME_EXIT=$?
 
-            # Try without --resume for PENDING tracks
-            if "$ORCHESTRATOR_SCRIPT" >> "$LOGFILE" 2>&1; then
-                echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (new) completed successfully${NC}"
-                echo "Status: SUCCESS (new mode)" >> "$LOGFILE"
+    # Check if resume mode found no tracks (by checking the log)
+    if tail -20 "$LOGFILE" | grep -q "No unclaimed tracks available"; then
+        echo -e "${YELLOW}No IN PROGRESS tracks, trying NEW tracks...${NC}"
+        echo "Resume mode: No IN PROGRESS tracks found, trying NEW mode" >> "$LOGFILE"
+
+        # Try without --resume for PENDING tracks
+        if "$ORCHESTRATOR_SCRIPT" >> "$LOGFILE" 2>&1; then
+            echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (new) completed successfully${NC}"
+            echo "Status: SUCCESS (new mode)" >> "$LOGFILE"
+        else
+            EXIT_CODE=$?
+            # Check if new mode also found no tracks
+            if tail -20 "$LOGFILE" | grep -q "No tracks found"; then
+                echo -e "${YELLOW}No tracks available in any mode - all work may be complete${NC}"
+                echo "Status: NO WORK AVAILABLE" >> "$LOGFILE"
             else
-                EXIT_CODE=$?
                 echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${EXIT_CODE}${NC}"
                 echo "Status: FAILED (exit code ${EXIT_CODE})" >> "$LOGFILE"
                 echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
             fi
-        else
-            echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${RESUME_EXIT}${NC}"
-            echo "Status: FAILED (exit code ${RESUME_EXIT})" >> "$LOGFILE"
-            echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
         fi
+    elif [ $RESUME_EXIT -eq 0 ]; then
+        echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (resume) completed successfully${NC}"
+        echo "Status: SUCCESS (resume mode)" >> "$LOGFILE"
+    else
+        echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${RESUME_EXIT}${NC}"
+        echo "Status: FAILED (exit code ${RESUME_EXIT})" >> "$LOGFILE"
+        echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
     fi
 
     echo "" >> "$LOGFILE"
 
     # Calculate time until next run
+    CURRENT_TIME_NOW=$(date +%s)
     NEXT_RUN_TIME=$((CURRENT_TIME + INTERVAL_MINUTES * 60))
-    WAIT_SECONDS=$((NEXT_RUN_TIME - $(date +%s)))
+    WAIT_SECONDS=$((NEXT_RUN_TIME - CURRENT_TIME_NOW))
 
     # If we still have time for another run
     if [ $NEXT_RUN_TIME -lt $END_TIME ]; then
-        echo -e "\n${BLUE}Next run in ${INTERVAL_MINUTES} minutes...${NC}"
-        echo -e "${YELLOW}Waiting...${NC}"
-        sleep $WAIT_SECONDS
+        if [ $WAIT_SECONDS -gt 0 ]; then
+            echo -e "\n${BLUE}Next run in $((WAIT_SECONDS / 60)) minutes...${NC}"
+            echo -e "${YELLOW}Waiting...${NC}"
+            sleep $WAIT_SECONDS
+        else
+            echo -e "\n${YELLOW}Last run took longer than interval, starting next run immediately${NC}"
+        fi
     fi
 done
 
