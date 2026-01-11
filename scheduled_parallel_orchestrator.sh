@@ -11,7 +11,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 INTERVAL_MINUTES=10
-DURATION_HOURS=5
+DURATION_HOURS=12
 LOGFILE="/home/gprice/projects/multiverse_dive/parallel_orchestrator_runs.log"
 ORCHESTRATOR_SCRIPT="/home/gprice/projects/multiverse_dive/parallel_orchestrator.sh"
 
@@ -73,17 +73,32 @@ while true; do
     # Execute the parallel orchestrator
     echo -e "${YELLOW}Launching parallel orchestrator...${NC}\n"
 
-    # Use --resume flag to pick up any IN PROGRESS tracks
+    # Try --resume first (for IN PROGRESS tracks), then without (for PENDING tracks)
     if "$ORCHESTRATOR_SCRIPT" --resume >> "$LOGFILE" 2>&1; then
-        echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} completed successfully${NC}"
-        echo "Status: SUCCESS" >> "$LOGFILE"
+        echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (resume) completed successfully${NC}"
+        echo "Status: SUCCESS (resume mode)" >> "$LOGFILE"
     else
-        EXIT_CODE=$?
-        echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${EXIT_CODE}${NC}"
-        echo "Status: FAILED (exit code ${EXIT_CODE})" >> "$LOGFILE"
+        RESUME_EXIT=$?
+        # Check if resume mode found no tracks
+        if grep -q "No unclaimed tracks available" "$LOGFILE" | tail -5; then
+            echo -e "${YELLOW}No IN PROGRESS tracks, trying NEW tracks...${NC}"
+            echo "Resume mode: No IN PROGRESS tracks found, trying NEW mode" >> "$LOGFILE"
 
-        # Continue on failure - the next run might succeed
-        echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
+            # Try without --resume for PENDING tracks
+            if "$ORCHESTRATOR_SCRIPT" >> "$LOGFILE" 2>&1; then
+                echo -e "${GREEN}✓ Parallel orchestrator run #${RUN_COUNT} (new) completed successfully${NC}"
+                echo "Status: SUCCESS (new mode)" >> "$LOGFILE"
+            else
+                EXIT_CODE=$?
+                echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${EXIT_CODE}${NC}"
+                echo "Status: FAILED (exit code ${EXIT_CODE})" >> "$LOGFILE"
+                echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
+            fi
+        else
+            echo -e "${RED}✗ Parallel orchestrator run #${RUN_COUNT} failed with exit code ${RESUME_EXIT}${NC}"
+            echo "Status: FAILED (exit code ${RESUME_EXIT})" >> "$LOGFILE"
+            echo -e "${YELLOW}Continuing to next scheduled run...${NC}"
+        fi
     fi
 
     echo "" >> "$LOGFILE"
