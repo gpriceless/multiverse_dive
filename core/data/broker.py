@@ -148,8 +148,12 @@ class DataBroker:
         if discovery_tasks:
             results = await asyncio.gather(*discovery_tasks, return_exceptions=True)
             for result in results:
-                if isinstance(result, DiscoveryResult):
-                    all_results.extend(result.candidates if hasattr(result, 'candidates') else [result])
+                if isinstance(result, list):
+                    # Result is already a list of DiscoveryResults
+                    all_results.extend(result)
+                elif isinstance(result, DiscoveryResult):
+                    # Result is a single DiscoveryResult
+                    all_results.append(result)
                 elif isinstance(result, Exception):
                     # Log error but continue with other results
                     print(f"Discovery error: {result}")
@@ -452,5 +456,5 @@ class DataBroker:
         # Get provider preference from registry
         provider_info = self.provider_registry.get_provider(candidate.provider)
         if provider_info:
-            return provider_info.get("preference_score", 0.5)
+            return provider_info.metadata.get("preference_score", 0.5)
         return 0.5
