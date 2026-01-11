@@ -1,0 +1,12 @@
+# Kubernetes Namespace for Multiverse Dive
+# Deploy: kubectl apply -f namespace.yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multiverse-dive
+  labels:
+    app: multiverse-dive
+    environment: production
+  annotations:
+    description: "Geospatial event intelligence platform"

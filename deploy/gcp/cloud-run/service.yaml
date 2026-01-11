@@ -1,0 +1,81 @@
+# Google Cloud Run Service for Multiverse Dive API
+# Deploy: gcloud run services replace service.yaml --region=us-central1
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: multiverse-dive-api
+  labels:
+    app: multiverse-dive
+    component: api
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "100"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: multiverse-dive-sa@${PROJECT_ID}.iam.gserviceaccount.com
+      containers:
+        - image: gcr.io/${PROJECT_ID}/multiverse-dive-api:${IMAGE_TAG}
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: LOG_LEVEL
+              value: INFO
+            - name: WORKERS
+              value: "4"
+            - name: PORT
+              value: "8000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: redis-url
+            - name: API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: api-secret-key
+            - name: STAC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: stac-api-key
+            - name: GCS_BUCKET
+              value: multiverse-dive-data
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+  traffic:
+    - percent: 100
+      latestRevision: true

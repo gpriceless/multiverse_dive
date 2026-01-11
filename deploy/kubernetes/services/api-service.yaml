@@ -1,0 +1,22 @@
+# ClusterIP Service for Multiverse Dive API
+# Deploy: kubectl apply -f api-service.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: multiverse-dive-api
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+    component: api
+spec:
+  type: ClusterIP
+  selector:
+    app: multiverse-dive
+    component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  sessionAffinity: None

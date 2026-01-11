@@ -1,0 +1,139 @@
+# Kubernetes Deployment for Multiverse Dive Worker
+# Deploy: kubectl apply -f worker.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multiverse-dive-worker
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+    component: worker
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: multiverse-dive
+      component: worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: multiverse-dive
+        component: worker
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: multiverse-dive-sa
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: worker
+          image: multiverse-dive-worker:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+          env:
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: multiverse-dive-config
+                  key: environment
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: multiverse-dive-config
+                  key: log-level
+            - name: WORKER_CONCURRENCY
+              valueFrom:
+                configMapKeyRef:
+                  name: multiverse-dive-config
+                  key: worker-concurrency
+            - name: MAX_MEMORY_MB
+              valueFrom:
+                configMapKeyRef:
+                  name: multiverse-dive-config
+                  key: max-memory-mb
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: redis-url
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: s3-bucket
+            - name: STAC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: stac-api-key
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sys; sys.exit(0)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sys; sys.exit(0)"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /app/cache
+            - name: data-volume
+              mountPath: /app/data
+            - name: scratch-volume
+              mountPath: /app/scratch
+      volumes:
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: multiverse-dive-data
+        - name: scratch-volume
+          emptyDir:
+            sizeLimit: 10Gi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: multiverse-dive
+                    component: worker
+                topologyKey: kubernetes.io/hostname

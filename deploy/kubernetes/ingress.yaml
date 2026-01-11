@@ -1,0 +1,50 @@
+# Kubernetes Ingress for Multiverse Dive API
+# Deploy: kubectl apply -f ingress.yaml
+# Requires: nginx-ingress controller or similar
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multiverse-dive-ingress
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.multiverse-dive.example.com
+      secretName: multiverse-dive-tls
+  rules:
+    - host: api.multiverse-dive.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multiverse-dive-api
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: multiverse-dive-api
+                port:
+                  number: 80
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: multiverse-dive-api
+                port:
+                  number: 80

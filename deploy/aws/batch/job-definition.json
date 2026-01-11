@@ -1,0 +1,111 @@
+{
+  "jobDefinitionName": "multiverse-dive-batch",
+  "type": "container",
+  "platformCapabilities": ["FARGATE"],
+  "containerProperties": {
+    "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/multiverse-dive-worker:${IMAGE_TAG}",
+    "resourceRequirements": [
+      {
+        "type": "VCPU",
+        "value": "4"
+      },
+      {
+        "type": "MEMORY",
+        "value": "16384"
+      }
+    ],
+    "jobRoleArn": "${JOB_ROLE_ARN}",
+    "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+    "networkConfiguration": {
+      "assignPublicIp": "ENABLED"
+    },
+    "fargatePlatformConfiguration": {
+      "platformVersion": "LATEST"
+    },
+    "environment": [
+      {
+        "name": "ENVIRONMENT",
+        "value": "production"
+      },
+      {
+        "name": "LOG_LEVEL",
+        "value": "INFO"
+      },
+      {
+        "name": "BATCH_MODE",
+        "value": "true"
+      },
+      {
+        "name": "MAX_MEMORY_MB",
+        "value": "15000"
+      },
+      {
+        "name": "WORKER_CONCURRENCY",
+        "value": "8"
+      }
+    ],
+    "secrets": [
+      {
+        "name": "DATABASE_URL",
+        "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/multiverse-dive/database-url"
+      },
+      {
+        "name": "S3_BUCKET",
+        "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/multiverse-dive/s3-bucket"
+      },
+      {
+        "name": "STAC_API_KEY",
+        "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/multiverse-dive/stac-api-key"
+      }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/multiverse-dive",
+        "awslogs-region": "${AWS_REGION}",
+        "awslogs-stream-prefix": "batch"
+      }
+    },
+    "mountPoints": [
+      {
+        "containerPath": "/data",
+        "sourceVolume": "scratch",
+        "readOnly": false
+      }
+    ],
+    "volumes": [
+      {
+        "name": "scratch",
+        "efsVolumeConfiguration": {
+          "fileSystemId": "${EFS_FILE_SYSTEM_ID}",
+          "rootDirectory": "/multiverse-dive/batch",
+          "transitEncryption": "ENABLED"
+        }
+      }
+    ]
+  },
+  "retryStrategy": {
+    "attempts": 3,
+    "evaluateOnExit": [
+      {
+        "onStatusReason": "Host EC2*",
+        "action": "RETRY"
+      },
+      {
+        "onReason": "*OutOfMemoryError*",
+        "action": "EXIT"
+      },
+      {
+        "onExitCode": "1",
+        "action": "RETRY"
+      }
+    ]
+  },
+  "timeout": {
+    "attemptDurationSeconds": 7200
+  },
+  "tags": {
+    "Application": "multiverse-dive",
+    "Environment": "production"
+  }
+}

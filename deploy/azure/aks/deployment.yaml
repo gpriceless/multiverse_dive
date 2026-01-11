@@ -1,0 +1,110 @@
+# AKS Deployment for Multiverse Dive API
+# Deploy: kubectl apply -f deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multiverse-dive-api
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: multiverse-dive
+      component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: multiverse-dive
+        component: api
+    spec:
+      serviceAccountName: multiverse-dive-sa
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: ${ACR_LOGIN_SERVER}/multiverse-dive-api:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: LOG_LEVEL
+              value: INFO
+            - name: WORKERS
+              value: "4"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: redis-url
+            - name: API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: api-secret-key
+            - name: STAC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: multiverse-dive-secrets
+                  key: stac-api-key
+            - name: AZURE_STORAGE_ACCOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: multiverse-dive-config
+                  key: azure-storage-account
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /app/cache
+      volumes:
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 5Gi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: multiverse-dive
+                    component: api
+                topologyKey: kubernetes.io/hostname

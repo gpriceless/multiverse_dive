@@ -1,0 +1,35 @@
+# LoadBalancer Service for Multiverse Dive API (optional)
+# Deploy: kubectl apply -f api-lb.yaml
+# Note: Use this for direct external access without Ingress
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: multiverse-dive-api-lb
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+    component: api
+  annotations:
+    # AWS NLB annotations (uncomment for AWS)
+    # service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    # GCP annotations (uncomment for GCP)
+    # cloud.google.com/load-balancer-type: External
+    # Azure annotations (uncomment for Azure)
+    # service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+spec:
+  type: LoadBalancer
+  selector:
+    app: multiverse-dive
+    component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: 8000
+      protocol: TCP
+  externalTrafficPolicy: Local

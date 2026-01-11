@@ -1,0 +1,32 @@
+# ConfigMap for Multiverse Dive Application Configuration
+# Deploy: kubectl apply -f app-config.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multiverse-dive-config
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+data:
+  # Environment settings
+  environment: "production"
+  log-level: "INFO"
+
+  # API settings
+  workers: "4"
+  max-connections: "100"
+  request-timeout: "300"
+
+  # Worker settings
+  worker-concurrency: "4"
+  max-memory-mb: "7000"
+
+  # Data settings
+  cache-ttl: "3600"
+  max-cache-size-gb: "10"
+
+  # Feature flags
+  enable-metrics: "true"
+  enable-tracing: "false"
+  enable-debug-endpoints: "false"

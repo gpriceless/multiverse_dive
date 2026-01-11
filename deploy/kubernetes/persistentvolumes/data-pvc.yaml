@@ -1,0 +1,24 @@
+# Persistent Volume Claim for Multiverse Dive Data Storage
+# Deploy: kubectl apply -f data-pvc.yaml
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: multiverse-dive-data
+  namespace: multiverse-dive
+  labels:
+    app: multiverse-dive
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  # Uncomment and modify for specific storage class
+  # storageClassName: standard
+  # For AWS EFS:
+  # storageClassName: efs-sc
+  # For GCP Filestore:
+  # storageClassName: filestore-sc
+  # For Azure Files:
+  # storageClassName: azurefile
