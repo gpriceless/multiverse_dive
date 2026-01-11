@@ -110,6 +110,12 @@
       "examples": [
         {"nir": ["B08", "B8A"], "swir1": ["B11"], "swir2": ["B12"]}
       ]
+    },
+
+    "processing_level": {
+      "type": "string",
+      "description": "Data processing level (e.g., L1C, L2A, ARD)",
+      "examples": ["L1C", "L2A", "L1", "L2", "ARD", "raw"]
     }
   }
 }

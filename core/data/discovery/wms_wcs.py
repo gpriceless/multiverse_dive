@@ -170,7 +170,7 @@ class WMSWCSAdapter(DiscoveryAdapter):
                     spatial_coverage_percent=spatial_coverage,
                     resolution_m=provider.capabilities.get("resolution_m", 10.0),
                     quality_flag="good",
-                    cost_tier=provider.cost.get("tier", "open") if hasattr(provider, "cost") else "open",
+                    cost_tier=provider.cost.get("tier", "open"),
                     metadata={
                         "layer_name": name.text,
                         "title": title_text,
@@ -278,7 +278,7 @@ class WMSWCSAdapter(DiscoveryAdapter):
                     spatial_coverage_percent=spatial_coverage,
                     resolution_m=provider.capabilities.get("resolution_m", 10.0),
                     quality_flag="good",
-                    cost_tier=provider.cost.get("tier", "open") if hasattr(provider, "cost") else "open",
+                    cost_tier=provider.cost.get("tier", "open"),
                     metadata={
                         "coverage_id": cov_id.text,
                         "protocol": "wcs"
@@ -371,17 +371,17 @@ class WMSWCSAdapter(DiscoveryAdapter):
         bbox: List[float]
     ) -> str:
         """Build WCS GetCoverage request URL."""
-        params = {
-            "service": "WCS",
-            "version": "2.0.1",
-            "request": "GetCoverage",
-            "coverageId": coverage_id,
-            "subset": f"x({bbox[0]},{bbox[2]})",
-            "subset": f"y({bbox[1]},{bbox[3]})",
-            "format": "image/tiff"
-        }
+        params = [
+            ("service", "WCS"),
+            ("version", "2.0.1"),
+            ("request", "GetCoverage"),
+            ("coverageId", coverage_id),
+            ("subset", f"x({bbox[0]},{bbox[2]})"),
+            ("subset", f"y({bbox[1]},{bbox[3]})"),
+            ("format", "image/tiff")
+        ]
 
-        param_str = "&".join(f"{k}={v}" for k, v in params.items())
+        param_str = "&".join(f"{k}={v}" for k, v in params)
         return f"{endpoint}?{param_str}"
 
     async def close(self):

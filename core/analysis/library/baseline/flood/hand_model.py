@@ -93,6 +93,7 @@ class HANDModelAlgorithm:
         "version": "1.0.0",
         "deterministic": True,
         "seed_required": False,
+        "experimental": True,
         "requirements": {
             "data": {
                 "dem": {"type": "elevation", "unit": "meters"}
@@ -105,7 +106,7 @@ class HANDModelAlgorithm:
         },
         "validation": {
             "accuracy_range": [0.65, 0.80],
-            "validated_regions": ["north_america", "europe"],
+            "validated_regions": [],
             "citations": ["doi:10.1016/j.envsoft.2012.11.009"],
             "notes": "Simplified implementation for rapid assessment"
         }
@@ -301,8 +302,9 @@ class HANDModelAlgorithm:
         seed = dem.copy()
         seed[1:-1, 1:-1] = np.inf
 
-        # Morphological reconstruction (simplified)
-        filled = np.maximum(dem, ndimage.grey_erosion(seed, size=(3, 3)))
+        # Morphological reconstruction using iterative grey_dilation
+        # For depression filling, use iterative dilation approach
+        filled = np.minimum(dem, ndimage.grey_dilation(seed, size=(3, 3)))
         filled[~valid_mask] = dem[~valid_mask]
 
         return filled
@@ -315,9 +317,13 @@ class HANDModelAlgorithm:
         """
         Simplified D8 flow accumulation.
 
+        WARNING: This is a simplified placeholder. For production use, integrate pysheds or richdem.
+
         This is a very basic implementation for demonstration.
         Production systems should use proper hydrological algorithms.
         """
+        logger.warning("D8 flow accumulation is experimental and not validated. "
+                      "For production use, integrate pysheds or richdem.")
         # Initialize flow accumulation
         flow_accum = np.ones_like(dem, dtype=np.float32)
 
@@ -375,9 +381,8 @@ class HANDModelAlgorithm:
         # (A proper implementation would trace flow paths)
 
         # Find nearest drainage pixel for each location
-        indices = ndimage.distance_transform_edt(
+        _, indices = ndimage.distance_transform_edt(
             ~drainage_network,
-            return_distances=False,
             return_indices=True
         )
 
