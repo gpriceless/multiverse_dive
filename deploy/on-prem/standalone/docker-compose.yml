@@ -1,0 +1,126 @@
+# Multiverse Dive - Standalone Single-Server Deployment
+# Deploys all services on a single host with persistent volumes
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f
+#   docker-compose down
+#
+# Requirements:
+#   - Docker Engine 20.10+
+#   - Docker Compose 2.0+
+#   - 8GB RAM minimum (16GB recommended)
+#   - 50GB disk space
+
+version: "3.9"
+
+services:
+  # Core API service
+  api:
+    image: multiverse-dive/api:${VERSION:-latest}
+    build:
+      context: ../../..
+      dockerfile: docker/api/Dockerfile
+    container_name: multiverse-dive-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      - MULTIVERSE_DIVE_ENV=production
+      - MULTIVERSE_DIVE_DATA_DIR=/data
+      - MULTIVERSE_DIVE_CACHE_DIR=/cache
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://multiverse:${DB_PASSWORD:-changeme}@postgres:5432/multiverse_dive
+    volumes:
+      - api-data:/data
+      - api-cache:/cache
+      - ./config:/app/config:ro
+    depends_on:
+      - redis
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - multiverse-net
+
+  # Worker service for background processing
+  worker:
+    image: multiverse-dive/worker:${VERSION:-latest}
+    build:
+      context: ../../..
+      dockerfile: docker/worker/Dockerfile
+    container_name: multiverse-dive-worker
+    restart: unless-stopped
+    environment:
+      - MULTIVERSE_DIVE_ENV=production
+      - MULTIVERSE_DIVE_DATA_DIR=/data
+      - MULTIVERSE_DIVE_CACHE_DIR=/cache
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://multiverse:${DB_PASSWORD:-changeme}@postgres:5432/multiverse_dive
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+    volumes:
+      - worker-data:/data
+      - worker-cache:/cache
+      - ./config:/app/config:ro
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - multiverse-net
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: multiverse-dive-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - multiverse-net
+
+  # PostgreSQL for persistent storage
+  postgres:
+    image: postgis/postgis:15-3.4-alpine
+    container_name: multiverse-dive-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=multiverse
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+      - POSTGRES_DB=multiverse_dive
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiverse -d multiverse_dive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - multiverse-net
+
+networks:
+  multiverse-net:
+    driver: bridge
+
+volumes:
+  api-data:
+    driver: local
+  api-cache:
+    driver: local
+  worker-data:
+    driver: local
+  worker-cache:
+    driver: local
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local

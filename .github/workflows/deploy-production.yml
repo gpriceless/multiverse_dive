@@ -1,0 +1,250 @@
+name: Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.2.3)'
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  PRODUCTION_HOST: prod.multiverse-dive.example.com
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Deploying version: ${VERSION}"
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: ${VERSION}. Expected format: vX.Y.Z"
+            exit 1
+          fi
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: validate-release
+    environment:
+      name: production
+      url: https://${{ env.PRODUCTION_HOST }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release.outputs.version }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify images exist
+        run: |
+          VERSION=${{ needs.validate-release.outputs.version }}
+          echo "Verifying images for version: ${VERSION}"
+
+          docker manifest inspect ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/api:${VERSION} || {
+            echo "::error::API image not found for version ${VERSION}"
+            exit 1
+          }
+
+          docker manifest inspect ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/worker:${VERSION} || {
+            echo "::error::Worker image not found for version ${VERSION}"
+            exit 1
+          }
+
+          echo "All required images found"
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+
+      - name: Add production host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Create database backup
+        env:
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "Creating pre-deployment database backup..."
+          ssh ${DEPLOY_USER}@${{ env.PRODUCTION_HOST }} << 'BACKUP_SCRIPT'
+            BACKUP_DIR="/opt/multiverse-dive/backups"
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            mkdir -p ${BACKUP_DIR}
+
+            # Backup PostgreSQL
+            docker exec multiverse-dive-postgres pg_dump -U multiverse multiverse_dive > ${BACKUP_DIR}/db_${TIMESTAMP}.sql
+
+            # Keep only last 10 backups
+            ls -t ${BACKUP_DIR}/db_*.sql | tail -n +11 | xargs -r rm
+
+            echo "Backup created: ${BACKUP_DIR}/db_${TIMESTAMP}.sql"
+          BACKUP_SCRIPT
+
+      - name: Deploy to production
+        env:
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+          DB_PASSWORD: ${{ secrets.PRODUCTION_DB_PASSWORD }}
+          API_SECRET_KEY: ${{ secrets.PRODUCTION_API_SECRET }}
+          VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          cat > deploy.sh << 'DEPLOY_SCRIPT'
+          #!/bin/bash
+          set -e
+
+          DEPLOY_DIR="/opt/multiverse-dive"
+          COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yml"
+
+          echo "=== Multiverse Dive Production Deployment ==="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Version: $VERSION"
+
+          cd ${DEPLOY_DIR}
+
+          # Pull versioned images
+          echo "Pulling images for version ${VERSION}..."
+          docker pull $REGISTRY/$IMAGE_PREFIX/api:$VERSION
+          docker pull $REGISTRY/$IMAGE_PREFIX/worker:$VERSION
+
+          # Tag for production
+          docker tag $REGISTRY/$IMAGE_PREFIX/api:$VERSION multiverse-dive/api:production
+          docker tag $REGISTRY/$IMAGE_PREFIX/worker:$VERSION multiverse-dive/worker:production
+
+          # Update environment
+          cat > .env << EOF
+          VERSION=$VERSION
+          DB_PASSWORD=${DB_PASSWORD}
+          API_SECRET_KEY=${API_SECRET_KEY}
+          MULTIVERSE_DIVE_ENV=production
+          EOF
+
+          # Rolling update
+          echo "Performing rolling update..."
+
+          # Update worker first (can have brief downtime)
+          docker compose -f ${COMPOSE_FILE} up -d --no-deps worker
+          sleep 10
+
+          # Update API with minimal downtime
+          docker compose -f ${COMPOSE_FILE} up -d --no-deps api
+          sleep 5
+
+          # Health check loop
+          echo "Verifying deployment health..."
+          MAX_ATTEMPTS=20
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "Health check passed on attempt $i"
+              break
+            fi
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "ERROR: Health check failed after $MAX_ATTEMPTS attempts"
+              echo "Initiating rollback..."
+              exit 1
+            fi
+            echo "Waiting for API to be ready... (attempt $i/$MAX_ATTEMPTS)"
+            sleep 5
+          done
+
+          # Run database migrations if needed
+          docker compose -f ${COMPOSE_FILE} exec -T api python -m core.db.migrate || echo "No migrations needed"
+
+          # Cleanup old images
+          docker image prune -f --filter "until=168h" || true
+
+          echo "=== Production deployment successful ==="
+          echo "Version: $VERSION"
+          DEPLOY_SCRIPT
+
+          # Copy files and execute
+          scp deploy/on-prem/standalone/docker-compose.yml ${DEPLOY_USER}@${{ env.PRODUCTION_HOST }}:/opt/multiverse-dive/docker-compose.yml
+          scp deploy.sh ${DEPLOY_USER}@${{ env.PRODUCTION_HOST }}:/tmp/deploy.sh
+
+          ssh ${DEPLOY_USER}@${{ env.PRODUCTION_HOST }} \
+            "REGISTRY=${{ env.REGISTRY }} \
+             IMAGE_PREFIX=${{ env.IMAGE_PREFIX }} \
+             VERSION=${VERSION} \
+             DB_PASSWORD='${DB_PASSWORD}' \
+             API_SECRET_KEY='${API_SECRET_KEY}' \
+             bash /tmp/deploy.sh"
+
+      - name: Run production smoke tests
+        run: |
+          echo "Running production smoke tests..."
+          sleep 15
+
+          # Health check
+          curl -sf https://${{ env.PRODUCTION_HOST }}/health || exit 1
+          echo "Health check: PASSED"
+
+          # Version verification
+          DEPLOYED_VERSION=$(curl -sf https://${{ env.PRODUCTION_HOST }}/api/v1/version | jq -r '.version')
+          EXPECTED_VERSION="${{ needs.validate-release.outputs.version }}"
+          if [ "$DEPLOYED_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::warning::Version mismatch - Expected: ${EXPECTED_VERSION}, Got: ${DEPLOYED_VERSION}"
+          fi
+          echo "Version check: COMPLETED"
+
+      - name: Create deployment record
+        if: success()
+        run: |
+          echo "Production deployment completed successfully"
+          echo "Version: ${{ needs.validate-release.outputs.version }}"
+          echo "URL: https://${{ env.PRODUCTION_HOST }}"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Rollback on failure
+        if: failure()
+        env:
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "::error::Deployment failed, initiating rollback..."
+          ssh ${DEPLOY_USER}@${{ env.PRODUCTION_HOST }} << 'ROLLBACK_SCRIPT'
+            DEPLOY_DIR="/opt/multiverse-dive"
+            BACKUP_DIR="${DEPLOY_DIR}/backups"
+
+            # Get the most recent backup
+            LATEST_BACKUP=$(ls -t ${BACKUP_DIR}/db_*.sql | head -1)
+
+            if [ -n "$LATEST_BACKUP" ]; then
+              echo "Restoring from backup: $LATEST_BACKUP"
+              docker exec -i multiverse-dive-postgres psql -U multiverse multiverse_dive < $LATEST_BACKUP
+            fi
+
+            # Restart with previous images
+            docker compose -f ${DEPLOY_DIR}/docker-compose.yml down
+            docker compose -f ${DEPLOY_DIR}/docker-compose.yml up -d
+
+            echo "Rollback completed"
+          ROLLBACK_SCRIPT

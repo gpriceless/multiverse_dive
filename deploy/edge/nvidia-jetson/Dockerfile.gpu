@@ -1,0 +1,91 @@
+# Multiverse Dive - NVIDIA Jetson GPU Image
+# Optimized for NVIDIA Jetson devices (Nano, Xavier, Orin)
+#
+# Target specs:
+#   - NVIDIA Jetson with CUDA support
+#   - GPU-accelerated algorithms
+#   - TensorRT optimization support
+#   - JetPack 5.x or 6.x
+#
+# Build (on Jetson device or with cross-compilation):
+#   docker build -t multiverse-dive/edge-jetson:latest -f Dockerfile.gpu .
+#
+# Run:
+#   docker run -d --runtime=nvidia -p 8080:8080 -v /data:/data multiverse-dive/edge-jetson:latest
+
+# Use NVIDIA L4T base image for Jetson (JetPack 5.x compatible)
+FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3 AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies with GPU support
+COPY requirements-jetson.txt /tmp/
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements-jetson.txt
+
+# Runtime stage
+FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgdal30 \
+    libgeos-c1v5 \
+    libproj22 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash multiverse \
+    && mkdir -p /app /data /cache /models \
+    && chown -R multiverse:multiverse /app /data /cache /models
+
+WORKDIR /app
+
+# Copy application code
+COPY --chown=multiverse:multiverse openspec/ ./openspec/
+COPY --chown=multiverse:multiverse core/ ./core/
+COPY --chown=multiverse:multiverse api/ ./api/
+
+USER multiverse
+
+# Environment configuration for GPU acceleration
+ENV MULTIVERSE_DIVE_ENV=edge \
+    MULTIVERSE_DIVE_DATA_DIR=/data \
+    MULTIVERSE_DIVE_CACHE_DIR=/cache \
+    MULTIVERSE_DIVE_MODEL_DIR=/models \
+    MULTIVERSE_DIVE_EDGE_MODE=true \
+    MULTIVERSE_DIVE_GPU_ENABLED=true \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # CUDA configuration
+    CUDA_VISIBLE_DEVICES=0 \
+    # TensorRT optimization
+    TRT_ENABLED=true \
+    # Memory management for Jetson
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+EXPOSE 8080
+
+# GPU-optimized startup with single worker (memory-conscious)
+CMD ["python3", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

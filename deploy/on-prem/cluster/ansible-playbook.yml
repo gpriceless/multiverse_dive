@@ -1,0 +1,251 @@
+# Multiverse Dive - Multi-Node Cluster Deployment
+# Ansible playbook for Docker Swarm cluster setup
+#
+# Prerequisites:
+#   - Ansible 2.10+
+#   - SSH access to all nodes
+#   - Python 3 on target nodes
+#
+# Usage:
+#   ansible-playbook -i inventory.ini ansible-playbook.yml
+#
+# Inventory example (inventory.ini):
+#   [managers]
+#   manager1 ansible_host=192.168.1.10
+#
+#   [workers]
+#   worker1 ansible_host=192.168.1.11
+#   worker2 ansible_host=192.168.1.12
+
+---
+- name: Multiverse Dive Cluster Setup
+  hosts: all
+  become: true
+  vars:
+    docker_version: "24.0"
+    multiverse_version: "{{ lookup('env', 'MULTIVERSE_VERSION') | default('latest', true) }}"
+    data_dir: /opt/multiverse-dive/data
+    shared_storage_type: nfs  # nfs, glusterfs, or local
+    nfs_server: "{{ hostvars[groups['managers'][0]]['ansible_host'] }}"
+    nfs_export: /srv/multiverse-shared
+
+  tasks:
+    # ============================================
+    # Phase 1: Common Setup (All Nodes)
+    # ============================================
+    - name: Install required system packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - python3-pip
+          - nfs-common
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    - name: Install Docker SDK for Python
+      pip:
+        name: docker
+        state: present
+
+    - name: Create data directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ data_dir }}"
+        - "{{ data_dir }}/config"
+        - "{{ data_dir }}/cache"
+
+    # ============================================
+    # Phase 2: NFS Shared Storage Setup
+    # ============================================
+    - name: Install NFS server on manager
+      apt:
+        name: nfs-kernel-server
+        state: present
+      when:
+        - inventory_hostname in groups['managers']
+        - shared_storage_type == "nfs"
+
+    - name: Create NFS export directory
+      file:
+        path: "{{ nfs_export }}"
+        state: directory
+        mode: "0777"
+      when:
+        - inventory_hostname in groups['managers']
+        - shared_storage_type == "nfs"
+
+    - name: Configure NFS exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ nfs_export }} *(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      when:
+        - inventory_hostname in groups['managers']
+        - shared_storage_type == "nfs"
+      notify: Restart NFS server
+
+    - name: Mount NFS share on workers
+      mount:
+        path: "{{ data_dir }}/shared"
+        src: "{{ nfs_server }}:{{ nfs_export }}"
+        fstype: nfs
+        opts: rw,sync
+        state: mounted
+      when:
+        - inventory_hostname in groups['workers']
+        - shared_storage_type == "nfs"
+
+    # ============================================
+    # Phase 3: Docker Swarm Initialization
+    # ============================================
+    - name: Initialize Docker Swarm on first manager
+      docker_swarm:
+        state: present
+        advertise_addr: "{{ ansible_host }}"
+      when: inventory_hostname == groups['managers'][0]
+      register: swarm_init
+
+    - name: Get Swarm join token for workers
+      command: docker swarm join-token -q worker
+      register: worker_token
+      when: inventory_hostname == groups['managers'][0]
+      changed_when: false
+
+    - name: Get Swarm join token for managers
+      command: docker swarm join-token -q manager
+      register: manager_token
+      when: inventory_hostname == groups['managers'][0]
+      changed_when: false
+
+    - name: Set token facts
+      set_fact:
+        swarm_worker_token: "{{ hostvars[groups['managers'][0]]['worker_token']['stdout'] }}"
+        swarm_manager_token: "{{ hostvars[groups['managers'][0]]['manager_token']['stdout'] }}"
+        swarm_manager_addr: "{{ hostvars[groups['managers'][0]]['ansible_host'] }}:2377"
+
+    - name: Join workers to Swarm
+      docker_swarm:
+        state: join
+        join_token: "{{ swarm_worker_token }}"
+        remote_addrs: ["{{ swarm_manager_addr }}"]
+        advertise_addr: "{{ ansible_host }}"
+      when: inventory_hostname in groups['workers']
+
+    # ============================================
+    # Phase 4: Create Docker Networks & Volumes
+    # ============================================
+    - name: Create overlay network
+      docker_network:
+        name: multiverse-net
+        driver: overlay
+        attachable: true
+      when: inventory_hostname == groups['managers'][0]
+
+    # ============================================
+    # Phase 5: Deploy Multiverse Dive Stack
+    # ============================================
+    - name: Copy stack configuration
+      template:
+        src: docker-stack.yml.j2
+        dest: "{{ data_dir }}/config/docker-stack.yml"
+        mode: "0644"
+      when: inventory_hostname == groups['managers'][0]
+
+    - name: Deploy Multiverse Dive stack
+      docker_stack:
+        name: multiverse-dive
+        compose:
+          - "{{ data_dir }}/config/docker-stack.yml"
+        state: present
+      when: inventory_hostname == groups['managers'][0]
+
+    # ============================================
+    # Phase 6: Basic Monitoring Setup
+    # ============================================
+    - name: Deploy monitoring stack (Prometheus + Grafana)
+      docker_stack:
+        name: monitoring
+        compose:
+          - "{{ data_dir }}/config/monitoring-stack.yml"
+        state: present
+      when:
+        - inventory_hostname == groups['managers'][0]
+        - deploy_monitoring | default(true)
+
+  handlers:
+    - name: Restart NFS server
+      systemd:
+        name: nfs-kernel-server
+        state: restarted
+      when: ansible_os_family == "Debian"
+
+# ============================================
+# Post-Deployment Verification
+# ============================================
+- name: Verify Deployment
+  hosts: managers[0]
+  become: true
+  tasks:
+    - name: Wait for services to start
+      pause:
+        seconds: 30
+
+    - name: Check service status
+      command: docker service ls
+      register: service_status
+      changed_when: false
+
+    - name: Display service status
+      debug:
+        var: service_status.stdout_lines
+
+    - name: Verify API is responding
+      uri:
+        url: "http://localhost:8080/health"
+        status_code: 200
+      retries: 5
+      delay: 10
+      register: health_check
+      until: health_check.status == 200

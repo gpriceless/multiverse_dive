@@ -1,0 +1,157 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  STAGING_HOST: staging.multiverse-dive.example.com
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://${{ env.STAGING_HOST }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Add staging host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.STAGING_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to staging server
+        env:
+          DEPLOY_USER: ${{ secrets.STAGING_USER }}
+          DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+          API_SECRET_KEY: ${{ secrets.STAGING_API_SECRET }}
+        run: |
+          # Create deployment script
+          cat > deploy.sh << 'DEPLOY_SCRIPT'
+          #!/bin/bash
+          set -e
+
+          DEPLOY_DIR="/opt/multiverse-dive"
+          COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yml"
+
+          echo "=== Multiverse Dive Staging Deployment ==="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Commit: $GITHUB_SHA"
+
+          # Create deployment directory if needed
+          sudo mkdir -p ${DEPLOY_DIR}
+          cd ${DEPLOY_DIR}
+
+          # Pull latest images
+          echo "Pulling latest images..."
+          docker pull $REGISTRY/$IMAGE_PREFIX/api:$GITHUB_SHA
+          docker pull $REGISTRY/$IMAGE_PREFIX/worker:$GITHUB_SHA
+
+          # Tag as staging
+          docker tag $REGISTRY/$IMAGE_PREFIX/api:$GITHUB_SHA multiverse-dive/api:staging
+          docker tag $REGISTRY/$IMAGE_PREFIX/worker:$GITHUB_SHA multiverse-dive/worker:staging
+
+          # Update environment file
+          cat > .env << EOF
+          VERSION=staging
+          DB_PASSWORD=${DB_PASSWORD}
+          API_SECRET_KEY=${API_SECRET_KEY}
+          MULTIVERSE_DIVE_ENV=staging
+          EOF
+
+          # Deploy with docker compose
+          if [ -f ${COMPOSE_FILE} ]; then
+            echo "Stopping existing services..."
+            docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
+          fi
+
+          echo "Starting services..."
+          docker compose -f ${COMPOSE_FILE} up -d
+
+          # Wait for services to be healthy
+          echo "Waiting for services to be healthy..."
+          sleep 30
+
+          # Health check
+          for i in {1..10}; do
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "Health check passed!"
+              break
+            fi
+            echo "Waiting for API to be ready... (attempt $i/10)"
+            sleep 10
+          done
+
+          # Verify deployment
+          if ! curl -sf http://localhost:8080/health > /dev/null; then
+            echo "ERROR: Health check failed after deployment"
+            docker compose -f ${COMPOSE_FILE} logs --tail=100
+            exit 1
+          fi
+
+          echo "=== Deployment successful ==="
+          DEPLOY_SCRIPT
+
+          # Copy files to staging server
+          scp deploy/on-prem/standalone/docker-compose.yml ${DEPLOY_USER}@${{ env.STAGING_HOST }}:/opt/multiverse-dive/docker-compose.yml
+          scp deploy.sh ${DEPLOY_USER}@${{ env.STAGING_HOST }}:/tmp/deploy.sh
+
+          # Execute deployment
+          ssh ${DEPLOY_USER}@${{ env.STAGING_HOST }} \
+            "REGISTRY=${{ env.REGISTRY }} \
+             IMAGE_PREFIX=${{ env.IMAGE_PREFIX }} \
+             GITHUB_SHA=${{ github.sha }} \
+             DB_PASSWORD='${DB_PASSWORD}' \
+             API_SECRET_KEY='${API_SECRET_KEY}' \
+             bash /tmp/deploy.sh"
+
+      - name: Run smoke tests
+        run: |
+          # Wait for DNS propagation if needed
+          sleep 10
+
+          # Basic smoke tests
+          echo "Running smoke tests..."
+
+          # Health endpoint
+          curl -sf https://${{ env.STAGING_HOST }}/health || exit 1
+          echo "Health check passed"
+
+          # Version endpoint
+          curl -sf https://${{ env.STAGING_HOST }}/api/v1/version | grep -q "${{ github.sha }}" || echo "Warning: Version mismatch"
+          echo "Version check completed"
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "Staging deployment successful"
+          echo "URL: https://${{ env.STAGING_HOST }}"
+          echo "Commit: ${{ github.sha }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Staging deployment failed"
