@@ -1,0 +1,167 @@
+# =============================================================================
+# Docker Compose - Full Stack Configuration
+# =============================================================================
+# Complete multiverse-dive deployment with all services.
+# Use for production-like environments and full integration testing.
+#
+# Usage:
+#   docker compose up -d              # Start all services
+#   docker compose up -d api worker   # Start specific services
+#   docker compose logs -f api        # Follow API logs
+#   docker compose down               # Stop and remove containers
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # Base Image Builder (not a runtime service)
+  # ===========================================================================
+  base:
+    build:
+      context: .
+      dockerfile: docker/base/Dockerfile
+    image: multiverse-dive-base:latest
+    profiles:
+      - build
+
+  # ===========================================================================
+  # API Service
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: multiverse-dive-api:latest
+    container_name: mdive-api
+    ports:
+      - "8000:8000"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_WORKERS=4
+      - LOG_LEVEL=info
+      - DATABASE_URL=postgresql://multiverse:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/multiverse
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONPATH=/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - api-cache:/app/cache
+      - shared-data:/app/data
+      - shared-output:/app/output
+    networks:
+      - mdive-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Background Worker
+  # ===========================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    image: multiverse-dive-worker:latest
+    container_name: mdive-worker
+    environment:
+      - WORKER_CONCURRENCY=4
+      - WORKER_QUEUE=default
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://multiverse:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/multiverse
+      - PYTHONPATH=/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - shared-data:/app/data
+      - shared-output:/app/output
+    networks:
+      - mdive-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # ===========================================================================
+  # Redis - Task Queue and Caching
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: mdive-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - mdive-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ===========================================================================
+  # PostgreSQL - Persistent Storage
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: mdive-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: multiverse
+      POSTGRES_USER: multiverse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - mdive-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiverse -d multiverse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  mdive-network:
+    driver: bridge
+    name: multiverse-dive-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  pgdata:
+    name: mdive-pgdata
+  redis-data:
+    name: mdive-redis-data
+  api-cache:
+    name: mdive-api-cache
+  shared-data:
+    name: mdive-shared-data
+  shared-output:
+    name: mdive-shared-output

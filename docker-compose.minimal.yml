@@ -1,0 +1,58 @@
+# =============================================================================
+# Docker Compose - Minimal CLI Configuration
+# =============================================================================
+# Lightweight stack for CLI-only operations.
+# No external services required - just the CLI container with local mounts.
+#
+# Usage:
+#   docker compose -f docker-compose.minimal.yml run --rm cli analyze --help
+#   docker compose -f docker-compose.minimal.yml run --rm cli validate spec.yaml
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # CLI Tool
+  # ===========================================================================
+  cli:
+    build:
+      context: .
+      dockerfile: docker/cli/Dockerfile
+    image: multiverse-dive-cli:latest
+    container_name: mdive-cli
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=info
+    volumes:
+      # Mount local directories for input/output
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./examples:/app/examples:ro
+      # Mount OpenSpec schemas
+      - ./openspec:/app/openspec:ro
+    working_dir: /app
+    # No restart policy - CLI is run-and-exit
+    stdin_open: true
+    tty: true
+
+  # ===========================================================================
+  # Core Processing (Batch Mode)
+  # ===========================================================================
+  core:
+    build:
+      context: .
+      dockerfile: docker/core/Dockerfile
+    image: multiverse-dive-core:latest
+    container_name: mdive-core
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=info
+    volumes:
+      # Mount local directories for input/output
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./examples:/app/examples:ro
+    working_dir: /app
+    stdin_open: true
+    tty: true

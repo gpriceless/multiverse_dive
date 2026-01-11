@@ -1,0 +1,91 @@
+# =============================================================================
+# Docker Compose - Development Configuration
+# =============================================================================
+# Development overrides for local development workflow.
+# Provides hot reload, debug ports, and local volume mounts.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # API Service - Development Mode
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: api
+    environment:
+      - API_WORKERS=1
+      - LOG_LEVEL=debug
+      - DEBUG=true
+      - RELOAD=true
+    volumes:
+      # Mount source code for hot reload
+      - ./core:/app/core:ro
+      - ./openspec:/app/openspec:ro
+      - ./agents:/app/agents:ro
+      - ./api:/app/api:ro
+      - ./examples:/app/examples:ro
+      # Local data directories
+      - ./data:/app/data
+      - ./output:/app/output
+    ports:
+      - "8000:8000"
+      # Debug port for IDE attachment
+      - "5678:5678"
+    command: >
+      uvicorn api:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/api
+      --reload-dir /app/core
+      --log-level debug
+
+  # ===========================================================================
+  # Background Worker - Development Mode
+  # ===========================================================================
+  worker:
+    environment:
+      - WORKER_CONCURRENCY=1
+      - LOG_LEVEL=debug
+      - DEBUG=true
+    volumes:
+      # Mount source code for development
+      - ./core:/app/core:ro
+      - ./openspec:/app/openspec:ro
+      - ./agents:/app/agents:ro
+      - ./examples:/app/examples:ro
+      # Local data directories
+      - ./data:/app/data
+      - ./output:/app/output
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # ===========================================================================
+  # Redis - Development Mode
+  # ===========================================================================
+  redis:
+    ports:
+      - "6379:6379"
+    # Use non-persistent storage in dev
+    command: redis-server --appendonly no --maxmemory 256mb
+
+  # ===========================================================================
+  # PostgreSQL - Development Mode
+  # ===========================================================================
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: devpassword

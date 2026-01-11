@@ -1,0 +1,110 @@
+# =============================================================================
+# Docker Ignore File for Multiverse Dive
+# =============================================================================
+# Excludes files and directories from Docker build context.
+# Keeps images small and prevents sensitive data from being included.
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+.github
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+*.egg
+.eggs
+dist
+build
+wheels
+sdist
+develop-eggs
+.installed.cfg
+
+# Virtual environments
+.venv
+venv
+ENV
+env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.idea
+.vscode
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings
+
+# Testing and coverage
+.pytest_cache
+.coverage
+.tox
+.nox
+htmlcov
+.hypothesis
+coverage.xml
+*.cover
+
+# Documentation (not needed in production)
+docs
+*.md
+!README.md
+
+# Tests (not needed in production images)
+tests
+test_*.py
+*_test.py
+conftest.py
+
+# Development and orchestration logs
+*.log
+orchestrator_*.log
+parallel_*.log
+scheduled_*.log
+
+# Lock files and temporary files
+.orchestrator_locks
+orchestrator_logs
+
+# Shell scripts (development only)
+*.sh
+
+# Claude configuration
+.claude
+
+# Local configuration files
+.env
+.env.*
+*.local
+
+# macOS artifacts
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows artifacts
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Jupyter notebooks (if any)
+.ipynb_checkpoints
+*.ipynb
+
+# Cache directories
+.cache
+.mypy_cache
+.ruff_cache
+
+# Build artifacts
+*.tar.gz
+*.zip
