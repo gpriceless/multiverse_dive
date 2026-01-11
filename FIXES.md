@@ -519,6 +519,7 @@ PYTHONPATH=. .venv/bin/pytest tests/test_flood_algorithms.py -v
 
 | Date | Fix ID | Status | Notes |
 |------|--------|--------|-------|
+| 2026-01-10 | NEW-005 | Fixed | Track 5: Division by zero in _calculate_fusion_confidence when configuration.sensors is empty |
 | 2026-01-10 | NEW-004 | Fixed | Track 1: None handling in soft_weights context (AttributeError when soft_weights was None) |
 | 2026-01-10 | NEW-003 | Fixed | Track 1: Resolution score clamping bug in constraints.py (negative values produced invalid scores > 1.0) |
 | 2026-01-10 | NEW-002 | Fixed | Track 1: Cloud cover score clamping bug in constraints.py (negative/over 100% values produced invalid scores) |

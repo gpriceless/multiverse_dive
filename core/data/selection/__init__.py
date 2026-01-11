@@ -6,6 +6,7 @@ Intelligent selection of sensors and data sources based on:
 - Sensor capabilities
 - Observable requirements
 - Quality thresholds
+- Multi-sensor fusion strategies
 """
 
 from .atmospheric import (
@@ -24,6 +25,19 @@ from .strategy import (
     SensorSelectionStrategy,
     get_observables_for_event_class,
 )
+from .fusion import (
+    FusionStrategy,
+    SensorRole,
+    BlendingMethod,
+    SensorContribution,
+    FusionConfiguration,
+    FusionPlan,
+    TemporalGap,
+    FusionStrategyEngine,
+    determine_fusion_strategy,
+    create_fusion_plan,
+    identify_temporal_gaps,
+)
 
 __all__ = [
     # Atmospheric assessment
@@ -40,4 +54,16 @@ __all__ = [
     "SensorSelection",
     "SensorSelectionStrategy",
     "get_observables_for_event_class",
+    # Fusion strategy
+    "FusionStrategy",
+    "SensorRole",
+    "BlendingMethod",
+    "SensorContribution",
+    "FusionConfiguration",
+    "FusionPlan",
+    "TemporalGap",
+    "FusionStrategyEngine",
+    "determine_fusion_strategy",
+    "create_fusion_plan",
+    "identify_temporal_gaps",
 ]
