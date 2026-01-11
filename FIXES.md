@@ -519,6 +519,8 @@ PYTHONPATH=. .venv/bin/pytest tests/test_flood_algorithms.py -v
 
 | Date | Fix ID | Status | Notes |
 |------|--------|--------|-------|
+| 2026-01-11 | NEW-032 | Fixed | Track 5 (I): None handling in diagnostics.py compute_statistics - both SpatialDiagnostic and TemporalDiagnostic crashed when values contained None |
+| 2026-01-11 | NEW-031 | Fixed | Track 5 (I): TypeError in qa_report.py _safe_round when passed None value - function didn't handle None input causing crash on np.isnan(None) |
 | 2026-01-11 | NEW-030 | Fixed | Track 1 (I): Performance optimization in artifacts.py _calculate_block_score - replaced O(n²) nested loop with vectorized numpy operations using boundary mask |
 | 2026-01-11 | NEW-029 | Fixed | Track 1 (I): Division by zero in artifacts.py _detect_saturation - added guard for zero finite pixel count |
 | 2026-01-11 | NEW-028 | Fixed | Track 1 (I): Division by zero in artifacts.py _detect_hot_pixels (hot and cold) - added guard for zero finite pixel count |

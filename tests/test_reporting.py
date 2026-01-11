@@ -1293,3 +1293,260 @@ class TestIntegration:
 
             assert (tmpdir / "diagnostics.json").exists()
             assert (tmpdir / "csv" / "metrics.csv").exists()
+
+
+# =============================================================================
+# Additional Edge Case Tests for Bug Fixes
+# =============================================================================
+
+class TestNoneHandling:
+    """Tests for None value handling across all reporting components."""
+
+    def test_safe_round_with_none(self):
+        """Test _safe_round handles None gracefully."""
+        from core.quality.reporting.qa_report import _safe_round
+
+        assert _safe_round(None) is None
+        assert _safe_round(1.234) == 1.234
+        assert _safe_round(float('nan')) is None
+        assert _safe_round(float('inf')) is None
+        assert _safe_round(float('-inf')) is None
+
+    def test_quality_summary_with_nan_confidence(self):
+        """Test QualitySummary handles NaN confidence_score."""
+        summary = QualitySummary(
+            overall_status="PASS",
+            confidence_score=float('nan'),
+        )
+        d = summary.to_dict()
+        # Should not crash, and should return None or 0.0
+        assert d.get("confidence_score") == 0.0  # or 0.0 is returned
+
+    def test_quality_summary_with_inf_confidence(self):
+        """Test QualitySummary handles Inf confidence_score."""
+        summary = QualitySummary(
+            overall_status="PASS",
+            confidence_score=float('inf'),
+        )
+        d = summary.to_dict()
+        assert d.get("confidence_score") == 0.0
+
+    def test_uncertainty_report_with_none_calibration(self):
+        """Test UncertaintySummaryReport with None calibration_score."""
+        from core.quality.reporting.qa_report import UncertaintySummaryReport
+
+        unc = UncertaintySummaryReport(
+            mean_uncertainty=0.15,
+            calibration_score=None,
+        )
+        d = unc.to_dict()
+        assert "calibration_score" not in d  # Should be omitted
+
+    def test_uncertainty_report_with_nan_values(self):
+        """Test UncertaintySummaryReport with NaN values."""
+        from core.quality.reporting.qa_report import UncertaintySummaryReport
+
+        unc = UncertaintySummaryReport(
+            mean_uncertainty=float('nan'),
+            max_uncertainty=float('inf'),
+        )
+        d = unc.to_dict()
+        # NaN/Inf should be replaced with 0.0
+        assert d["mean_uncertainty"] == 0.0
+        assert d["max_uncertainty"] == 0.0
+
+    def test_temporal_diagnostic_with_none_values(self):
+        """Test TemporalDiagnostic.compute_statistics with None in values."""
+        temporal = TemporalDiagnostic(
+            name="test",
+            description="Test with None",
+            timestamps=[datetime(2024, 1, i) for i in range(1, 5)],
+            values=[1.0, None, 2.0, 3.0],
+        )
+        stats = temporal.compute_statistics()
+        # Should skip None and compute stats on valid values
+        assert stats["count"] == 3
+        assert stats["min"] == 1.0
+        assert stats["max"] == 3.0
+
+    def test_temporal_diagnostic_all_none(self):
+        """Test TemporalDiagnostic.compute_statistics with all None values."""
+        temporal = TemporalDiagnostic(
+            name="test",
+            description="Test all None",
+            timestamps=[datetime(2024, 1, i) for i in range(1, 4)],
+            values=[None, None, None],
+        )
+        stats = temporal.compute_statistics()
+        assert stats["count"] == 0
+
+    def test_spatial_diagnostic_with_none_array(self):
+        """Test SpatialDiagnostic with array containing object None."""
+        # Create an object array with None (unusual but possible)
+        data = np.array([[1.0, 2.0], [3.0, 4.0]])
+        spatial = SpatialDiagnostic(
+            name="test",
+            description="Normal test",
+            data=data,
+        )
+        stats = spatial.compute_statistics()
+        assert stats["count"] == 4
+        assert stats["mean"] == 2.5
+
+    def test_spatial_diagnostic_all_nan(self):
+        """Test SpatialDiagnostic with all NaN values."""
+        data = np.array([[np.nan, np.nan], [np.nan, np.nan]])
+        spatial = SpatialDiagnostic(
+            name="test",
+            description="All NaN",
+            data=data,
+        )
+        stats = spatial.compute_statistics()
+        assert stats["count"] == 0
+
+    def test_spatial_diagnostic_mixed_nan_inf(self):
+        """Test SpatialDiagnostic with mixed NaN, Inf, and valid values."""
+        data = np.array([[1.0, np.nan], [np.inf, 2.0]])
+        spatial = SpatialDiagnostic(
+            name="test",
+            description="Mixed values",
+            data=data,
+        )
+        stats = spatial.compute_statistics()
+        assert stats["count"] == 2  # Only 1.0 and 2.0 are valid
+        assert stats["min"] == 1.0
+        assert stats["max"] == 2.0
+
+
+class TestCheckReportEdgeCases:
+    """Additional edge case tests for CheckReport."""
+
+    def test_check_report_negative_inf(self):
+        """Test CheckReport with negative infinity."""
+        check = CheckReport(
+            check_name="test",
+            category="test",
+            status="pass",
+            metric_value=float("-inf"),
+            threshold=float("-inf"),
+        )
+        d = check.to_dict()
+        assert d.get("metric_value") is None
+        assert d.get("threshold") is None
+
+    def test_check_report_very_small_values(self):
+        """Test CheckReport with very small values (not zero)."""
+        check = CheckReport(
+            check_name="test",
+            category="test",
+            status="pass",
+            metric_value=1e-10,
+            threshold=1e-15,
+        )
+        d = check.to_dict()
+        assert d["metric_value"] is not None
+        assert d["threshold"] is not None
+
+
+class TestDiagnosticComparisonEdgeCases:
+    """Tests for diagnostic comparison edge cases."""
+
+    def test_comparison_with_zero_baseline(self):
+        """Test comparison when baseline metric is zero."""
+        # Create baseline with zero metric
+        baseline = Diagnostics(
+            run_id="baseline",
+            timestamp=datetime.now(timezone.utc),
+            level=DiagnosticLevel.STANDARD,
+            metrics=[
+                DiagnosticMetric(
+                    name="zero_metric",
+                    category=MetricCategory.SANITY,
+                    value=0.0,
+                )
+            ],
+        )
+
+        # Create current with non-zero metric
+        generator = DiagnosticGenerator()
+        sanity = MockSanityResult(overall_score=0.5)
+        diag = generator.generate(
+            sanity_result=sanity,
+            baseline_diagnostics=baseline,
+        )
+
+        # Should not crash on division
+        assert diag.comparison is not None
+
+    def test_comparison_with_same_metrics(self):
+        """Test comparison when metrics are identical."""
+        baseline = Diagnostics(
+            run_id="baseline",
+            timestamp=datetime.now(timezone.utc),
+            level=DiagnosticLevel.STANDARD,
+            metrics=[
+                DiagnosticMetric(
+                    name="sanity_overall_score",
+                    category=MetricCategory.SANITY,
+                    value=0.9,
+                )
+            ],
+        )
+
+        sanity = MockSanityResult(overall_score=0.9)
+        generator = DiagnosticGenerator()
+        diag = generator.generate(
+            sanity_result=sanity,
+            baseline_diagnostics=baseline,
+        )
+
+        assert diag.comparison is not None
+        # Same value should show 0% change
+        if "sanity_overall_score" in diag.comparison.metric_changes:
+            assert diag.comparison.metric_changes["sanity_overall_score"]["change_percent"] == 0.0
+
+
+class TestReportSaveFormats:
+    """Additional tests for report saving edge cases."""
+
+    def test_save_with_nested_directory(self):
+        """Test saving to nested directory that doesn't exist."""
+        metadata = ReportMetadata(
+            event_id="evt_test",
+            product_id="prod_test",
+        )
+        summary = QualitySummary(
+            overall_status="PASS",
+            confidence_score=0.9,
+        )
+        report = QAReport(metadata=metadata, summary=summary)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested_path = Path(tmpdir) / "a" / "b" / "c" / "report.json"
+            report.save(nested_path)
+            assert nested_path.exists()
+
+    def test_save_format_inference(self):
+        """Test format inference from file extension."""
+        metadata = ReportMetadata(
+            event_id="evt_test",
+            product_id="prod_test",
+        )
+        summary = QualitySummary(
+            overall_status="PASS",
+            confidence_score=0.9,
+        )
+        report = QAReport(metadata=metadata, summary=summary)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Test each extension
+            for ext, expected_content in [
+                (".json", "{"),
+                (".html", "<!DOCTYPE"),
+                (".md", "# QA Report"),
+                (".txt", "====="),
+            ]:
+                path = Path(tmpdir) / f"report{ext}"
+                report.save(path)
+                content = path.read_text()
+                assert expected_content in content, f"Failed for extension {ext}"

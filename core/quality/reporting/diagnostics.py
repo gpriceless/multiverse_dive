@@ -220,7 +220,12 @@ class SpatialDiagnostic:
 
     def compute_statistics(self) -> Dict[str, float]:
         """Compute statistics for the data."""
-        valid = self.data[~np.isnan(self.data) & ~np.isinf(self.data)]
+        try:
+            # Handle potential None values by converting to float array first
+            data = np.asarray(self.data, dtype=np.float64)
+            valid = data[~np.isnan(data) & ~np.isinf(data)]
+        except (TypeError, ValueError):
+            return {"count": 0}
         if len(valid) == 0:
             return {"count": 0}
         return {
