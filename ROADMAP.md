@@ -506,7 +506,7 @@ Your system can now make intelligent decisions! It knows when to use optical vs 
      - Input dataset, algorithm, and quality summary tracking
      - Reproducibility hashes and environment capture
    - `core/data/ingestion/persistence/__init__.py` - Module exports
-   - 77 comprehensive tests in `tests/test_persistence.py`
+   - 108 comprehensive tests in `tests/test_persistence.py`
 
 7. **Track 7: Cache System** (can develop in parallel with above)
    - `core/data/cache/manager.py` - Lifecycle management
