@@ -1194,3 +1194,265 @@ class TestAdditionalEdgeCases:
         # DEM has no alternatives
         assert len(selection.supporting_sensors) == 0
         assert selection.primary_sensor == SensorType.DEM
+
+
+class TestAtmosphericEdgeCases:
+    """Test edge cases and boundary conditions for atmospheric assessment."""
+
+    def test_all_none_inputs(self):
+        """Test assessment with all None inputs."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment = evaluator.assess()
+
+        # Should default to GOOD with no negative indicators
+        assert assessment.condition == AtmosphericCondition.GOOD
+        assert assessment.optical_suitable is True
+        assert assessment.sar_suitable is True
+        assert assessment.thermal_suitable is True
+        assert assessment.confidence == 0.0  # No data available
+
+    def test_zero_cloud_cover(self):
+        """Test assessment with exactly 0% cloud cover."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment = evaluator.assess(cloud_cover_percent=0.0)
+
+        assert assessment.condition == AtmosphericCondition.EXCELLENT
+        assert assessment.optical_suitable is True
+        assert assessment.degraded_mode is False
+
+    def test_boundary_cloud_cover_excellent(self):
+        """Test boundary at EXCELLENT/GOOD transition (5%)."""
+        evaluator = AtmosphericEvaluator()
+
+        # Just below boundary
+        assessment1 = evaluator.assess(cloud_cover_percent=4.9)
+        assert assessment1.condition == AtmosphericCondition.EXCELLENT
+
+        # At boundary (should be GOOD)
+        assessment2 = evaluator.assess(cloud_cover_percent=5.0)
+        assert assessment2.condition == AtmosphericCondition.GOOD
+
+    def test_boundary_cloud_cover_good(self):
+        """Test boundary at GOOD/FAIR transition (10%)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(cloud_cover_percent=9.9)
+        assert assessment1.condition == AtmosphericCondition.GOOD
+
+        assessment2 = evaluator.assess(cloud_cover_percent=10.0)
+        assert assessment2.condition == AtmosphericCondition.FAIR
+
+    def test_boundary_cloud_cover_fair(self):
+        """Test boundary at FAIR/POOR transition (50%)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(cloud_cover_percent=49.9)
+        assert assessment1.condition == AtmosphericCondition.FAIR
+
+        assessment2 = evaluator.assess(cloud_cover_percent=50.0)
+        assert assessment2.condition == AtmosphericCondition.POOR
+
+    def test_boundary_cloud_cover_poor(self):
+        """Test boundary at POOR/DEGRADED transition (80%)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(cloud_cover_percent=79.9)
+        assert assessment1.condition == AtmosphericCondition.POOR
+
+        assessment2 = evaluator.assess(cloud_cover_percent=80.0)
+        assert assessment2.condition == AtmosphericCondition.DEGRADED
+
+    def test_hundred_percent_cloud_cover(self):
+        """Test assessment with 100% cloud cover."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment = evaluator.assess(cloud_cover_percent=100.0)
+
+        assert assessment.condition == AtmosphericCondition.DEGRADED
+        assert assessment.optical_suitable is False
+        assert assessment.thermal_suitable is False
+        assert assessment.sar_suitable is True  # SAR still works
+        assert assessment.degraded_mode is True
+
+    def test_boundary_optical_threshold(self):
+        """Test boundary at optical suitability threshold (20%)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(cloud_cover_percent=19.9)
+        assert assessment1.optical_suitable is True
+
+        # At exactly 20.0%, still suitable (uses > not >=)
+        assessment2 = evaluator.assess(cloud_cover_percent=20.0)
+        assert assessment2.optical_suitable is True
+
+        # Just over threshold
+        assessment3 = evaluator.assess(cloud_cover_percent=20.1)
+        assert assessment3.optical_suitable is False
+
+    def test_boundary_thermal_threshold(self):
+        """Test boundary at thermal suitability threshold (50%)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(cloud_cover_percent=49.9)
+        assert assessment1.thermal_suitable is True
+
+        # At exactly 50.0%, still suitable (uses > not >=)
+        assessment2 = evaluator.assess(cloud_cover_percent=50.0)
+        assert assessment2.thermal_suitable is True
+
+        # Just over threshold
+        assessment3 = evaluator.assess(cloud_cover_percent=50.1)
+        assert assessment3.thermal_suitable is False
+
+    def test_boundary_degraded_threshold(self):
+        """Test boundary at degraded mode threshold (80%)."""
+        evaluator = AtmosphericEvaluator()
+
+        # At 79.9%, only SAR recommended (optical unsuitable), so degraded mode
+        assessment1 = evaluator.assess(cloud_cover_percent=79.9)
+        assert assessment1.degraded_mode is True  # Only SAR available = degraded
+
+        # At exactly 80.0%, still not degraded by cloud_cover check (uses > not >=)
+        # But still degraded because only SAR is recommended
+        assessment2 = evaluator.assess(cloud_cover_percent=80.0)
+        assert assessment2.degraded_mode is True  # Only SAR available = degraded
+
+        # Just over threshold - same result
+        assessment3 = evaluator.assess(cloud_cover_percent=80.1)
+        assert assessment3.degraded_mode is True
+
+    def test_boundary_visibility_threshold(self):
+        """Test boundary at visibility threshold (5 km)."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment1 = evaluator.assess(
+            cloud_cover_percent=5.0,
+            visibility_km=5.0
+        )
+        assert assessment1.optical_suitable is True
+
+        assessment2 = evaluator.assess(
+            cloud_cover_percent=5.0,
+            visibility_km=4.9
+        )
+        assert assessment2.optical_suitable is False
+
+    def test_conflicting_indicators(self):
+        """Test with conflicting atmospheric indicators."""
+        evaluator = AtmosphericEvaluator()
+
+        # Clear skies but severe weather
+        assessment = evaluator.assess(
+            cloud_cover_percent=2.0,
+            severe_weather=True
+        )
+
+        # Severe weather should override clear skies
+        assert assessment.condition == AtmosphericCondition.DEGRADED
+        assert assessment.degraded_mode is True
+
+    def test_empty_recommended_sensors_fallback(self):
+        """Test fallback when no sensors are recommended."""
+        evaluator = AtmosphericEvaluator()
+
+        # This shouldn't happen in practice, but test the fallback
+        # All sensors unsuitable (hypothetical edge case)
+        assessment = evaluator.assess(
+            cloud_cover_percent=95.0,
+            severe_weather=True
+        )
+
+        # Should always have at least SAR as fallback
+        assert len(assessment.recommended_sensors) > 0
+        assert AtmoSensorType.SAR in assessment.recommended_sensors
+
+    def test_partial_confidence_calculation(self):
+        """Test confidence calculation with partial data."""
+        evaluator = AtmosphericEvaluator()
+
+        # 1 of 5 parameters
+        assessment1 = evaluator.assess(cloud_cover_percent=10.0)
+        assert assessment1.confidence == 0.2
+
+        # 2 of 5 parameters
+        assessment2 = evaluator.assess(
+            cloud_cover_percent=10.0,
+            precipitation=False
+        )
+        assert assessment2.confidence == 0.4
+
+        # 3 of 5 parameters
+        assessment3 = evaluator.assess(
+            cloud_cover_percent=10.0,
+            precipitation=False,
+            severe_weather=False
+        )
+        assert assessment3.confidence == 0.6
+
+        # 4 of 5 parameters
+        assessment4 = evaluator.assess(
+            cloud_cover_percent=10.0,
+            precipitation=False,
+            severe_weather=False,
+            visibility_km=20.0
+        )
+        assert assessment4.confidence == 0.8
+
+    def test_negative_cloud_cover_handling(self):
+        """Test handling of invalid negative cloud cover."""
+        evaluator = AtmosphericEvaluator()
+
+        # System should still work (no crash), treat as excellent
+        assessment = evaluator.assess(cloud_cover_percent=-5.0)
+
+        assert assessment.condition == AtmosphericCondition.EXCELLENT
+        assert assessment.optical_suitable is True
+
+    def test_cloud_cover_over_100_handling(self):
+        """Test handling of invalid cloud cover > 100%."""
+        evaluator = AtmosphericEvaluator()
+
+        # Should still work, treat as degraded
+        assessment = evaluator.assess(cloud_cover_percent=150.0)
+
+        assert assessment.condition == AtmosphericCondition.DEGRADED
+        assert assessment.optical_suitable is False
+        assert assessment.degraded_mode is True
+
+    def test_zero_visibility(self):
+        """Test handling of zero visibility."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment = evaluator.assess(
+            cloud_cover_percent=5.0,
+            visibility_km=0.0
+        )
+
+        assert assessment.optical_suitable is False
+
+    def test_extreme_visibility(self):
+        """Test handling of very high visibility."""
+        evaluator = AtmosphericEvaluator()
+
+        assessment = evaluator.assess(
+            cloud_cover_percent=5.0,
+            visibility_km=200.0
+        )
+
+        assert assessment.optical_suitable is True
+
+    def test_unknown_event_class_recommendations(self):
+        """Test recommendations for unknown event class."""
+        evaluator = AtmosphericEvaluator()
+        assessment = evaluator.assess(cloud_cover_percent=10.0)
+
+        recommendations = recommend_sensors_for_event("unknown.event.type", assessment)
+
+        # Should still return recommendations based on atmospheric conditions
+        assert len(recommendations) > 0
+        # Should use default priority (atmospheric order)
+        for rec in recommendations:
+            assert "priority" in rec
+            assert "rationale" in rec
