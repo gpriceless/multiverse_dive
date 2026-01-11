@@ -590,7 +590,7 @@ Your data factory is operational! Raw, messy, heterogeneous inputs now flow thro
    - `core/analysis/assembly/validator.py` - Pre-execution validation (808 lines)
    - `core/analysis/assembly/optimizer.py` - Execution optimization (828 lines)
    - `core/analysis/assembly/__init__.py` - Module exports (141 lines)
-   - `tests/test_assembly.py` - Comprehensive test suite (62 tests passing)
+   - `tests/test_assembly.py` - Comprehensive test suite (64 tests passing)
 
 2. **Track 2: Fusion Core** 🔄 **[IN PROGRESS]**
    - `core/analysis/fusion/alignment.py` - Spatial/temporal alignment
