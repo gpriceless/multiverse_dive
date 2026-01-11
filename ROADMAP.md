@@ -488,7 +488,7 @@ Your system can now make intelligent decisions! It knows when to use optical vs 
      - Band consistency and metadata validation
    - `core/data/ingestion/validation/__init__.py` - ValidationSuite (258 lines)
      - Combined validation runner with overall quality scoring
-   - 42 comprehensive tests in tests/test_validation.py
+   - 55 comprehensive tests in tests/test_validation.py
 
 6. **Track 6: Persistence** ✅ **[DONE]**
    - `core/data/ingestion/persistence/storage.py` - Storage backends (1194 lines)
