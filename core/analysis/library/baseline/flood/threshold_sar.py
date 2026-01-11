@@ -270,6 +270,67 @@ class ThresholdSARAlgorithm:
         """Get algorithm metadata."""
         return ThresholdSARAlgorithm.METADATA
 
+    def process_tile(
+        self,
+        tile_data: np.ndarray,
+        context: Optional[Dict[str, Any]] = None
+    ) -> np.ndarray:
+        """
+        Process a single tile for memory-efficient execution.
+
+        This method enables tiled processing of large datasets that don't fit
+        in memory. The tile should contain SAR backscatter values in dB.
+
+        Args:
+            tile_data: SAR backscatter tile (dB), shape (H, W)
+            context: Optional context dictionary containing:
+                - nodata_value: Value to treat as nodata
+                - pixel_size_m: Pixel size in meters
+                - return_confidence: If True, return confidence instead of binary mask
+
+        Returns:
+            Flood extent mask for the tile (binary), or confidence raster if
+            return_confidence=True in context
+        """
+        context = context or {}
+        nodata_value = context.get("nodata_value")
+        return_confidence = context.get("return_confidence", False)
+
+        # Create valid data mask
+        valid_mask = np.ones_like(tile_data, dtype=bool)
+        if nodata_value is not None:
+            valid_mask &= (tile_data != nodata_value)
+        valid_mask &= np.isfinite(tile_data)
+
+        # Detect flood extent
+        flood_extent, confidence = self._detect_simple(tile_data, valid_mask)
+
+        if return_confidence:
+            return confidence
+        return flood_extent.astype(np.uint8)
+
+    def detect(
+        self,
+        sar_data: np.ndarray,
+        nodata_value: Optional[float] = None,
+        pixel_size_m: float = 10.0
+    ) -> ThresholdSARResult:
+        """
+        Simplified detection method for tile processing compatibility.
+
+        This is an alias for execute() with sensible defaults, designed
+        for use in tiled processing pipelines.
+
+        Args:
+            sar_data: SAR backscatter array (dB)
+            nodata_value: NoData value to mask
+            pixel_size_m: Pixel size in meters
+
+        Returns:
+            ThresholdSARResult with flood extent and confidence
+        """
+        return self.execute(sar_data, pixel_size_m=pixel_size_m, nodata_value=nodata_value)
+
     @staticmethod
     def create_from_dict(params: Dict[str, Any]) -> 'ThresholdSARAlgorithm':
         """

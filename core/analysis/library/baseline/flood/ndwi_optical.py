@@ -378,6 +378,112 @@ class NDWIOpticalAlgorithm:
         """Get algorithm metadata."""
         return NDWIOpticalAlgorithm.METADATA
 
+    def process_tile(
+        self,
+        tile_data: np.ndarray,
+        context: Optional[Dict[str, Any]] = None
+    ) -> np.ndarray:
+        """
+        Process a single tile for memory-efficient execution.
+
+        This method enables tiled/windowed processing of large optical datasets.
+        The tile should contain stacked green and NIR bands.
+
+        Args:
+            tile_data: Stacked optical tile, shape (2, H, W) where:
+                - tile_data[0] = green band
+                - tile_data[1] = NIR band
+                OR shape (H, W) with pre-computed NDWI values
+            context: Optional context dictionary containing:
+                - nodata_value: Value to treat as nodata
+                - pixel_size_m: Pixel size in meters
+                - return_confidence: If True, return confidence instead of binary mask
+                - return_ndwi: If True, return NDWI values instead of binary mask
+                - is_ndwi: If True, input is pre-computed NDWI (not green/NIR bands)
+
+        Returns:
+            Flood extent mask for the tile (binary), or confidence/NDWI raster
+            based on context flags
+        """
+        context = context or {}
+        nodata_value = context.get("nodata_value")
+        return_confidence = context.get("return_confidence", False)
+        return_ndwi = context.get("return_ndwi", False)
+        is_ndwi = context.get("is_ndwi", False)
+
+        # Handle pre-computed NDWI input
+        if is_ndwi or tile_data.ndim == 2:
+            if tile_data.ndim == 3 and tile_data.shape[0] == 2:
+                # It's green/NIR bands - compute NDWI
+                green_band = self._normalize_reflectance(tile_data[0])
+                nir_band = self._normalize_reflectance(tile_data[1])
+                valid_mask = np.isfinite(green_band) & np.isfinite(nir_band)
+                if nodata_value is not None:
+                    valid_mask &= (green_band != nodata_value) & (nir_band != nodata_value)
+                ndwi = self._calculate_ndwi(green_band, nir_band, valid_mask)
+            else:
+                # Pre-computed NDWI
+                ndwi = tile_data
+                valid_mask = np.isfinite(ndwi)
+                if nodata_value is not None:
+                    valid_mask &= (ndwi != nodata_value)
+        else:
+            # Extract green and NIR bands
+            if tile_data.shape[0] != 2:
+                raise ValueError(
+                    f"Expected tile_data shape (2, H, W) for green/NIR bands, "
+                    f"got {tile_data.shape}"
+                )
+            green_band = self._normalize_reflectance(tile_data[0])
+            nir_band = self._normalize_reflectance(tile_data[1])
+
+            # Create valid mask
+            valid_mask = np.isfinite(green_band) & np.isfinite(nir_band)
+            if nodata_value is not None:
+                valid_mask &= (green_band != nodata_value) & (nir_band != nodata_value)
+
+            # Calculate NDWI
+            ndwi = self._calculate_ndwi(green_band, nir_band, valid_mask)
+
+        if return_ndwi:
+            return ndwi
+
+        # Detect flood extent
+        flood_extent, confidence = self._detect_simple(ndwi, valid_mask)
+
+        if return_confidence:
+            return confidence
+        return flood_extent.astype(np.uint8)
+
+    def compute_ndwi_windowed(
+        self,
+        green_band: np.ndarray,
+        nir_band: np.ndarray,
+        nodata_value: Optional[float] = None
+    ) -> np.ndarray:
+        """
+        Compute NDWI for a window/tile of optical data.
+
+        This is a convenience method for windowed NDWI computation,
+        useful when reading rasters in chunks.
+
+        Args:
+            green_band: Green band reflectance tile
+            nir_band: NIR band reflectance tile
+            nodata_value: NoData value to mask
+
+        Returns:
+            NDWI array for the tile (-1 to 1)
+        """
+        green_band = self._normalize_reflectance(green_band)
+        nir_band = self._normalize_reflectance(nir_band)
+
+        valid_mask = np.isfinite(green_band) & np.isfinite(nir_band)
+        if nodata_value is not None:
+            valid_mask &= (green_band != nodata_value) & (nir_band != nodata_value)
+
+        return self._calculate_ndwi(green_band, nir_band, valid_mask)
+
     @staticmethod
     def create_from_dict(params: Dict[str, Any]) -> 'NDWIOpticalAlgorithm':
         """

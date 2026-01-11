@@ -54,6 +54,7 @@ algorithms:
 
     deterministic: true
     seed_required: false
+    supports_tiled: true
 
     module_path: "core.analysis.library.baseline.flood.threshold_sar"
     class_name: "SARThresholdFloodDetection"
@@ -127,6 +128,7 @@ algorithms:
 
     deterministic: true
     seed_required: false
+    supports_tiled: true
 
     module_path: "core.analysis.library.baseline.flood.ndwi_optical"
     class_name: "NDWIFloodDetection"
