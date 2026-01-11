@@ -1558,3 +1558,656 @@ class TestCOGConverterEdgeCases:
         # Unsorted factors should still work
         config = COGConfig(overview_factors=[8, 2, 16, 4])
         assert set(config.overview_factors) == {2, 4, 8, 16}
+
+
+# =============================================================================
+# Cache Manager Tests (Track 8)
+# =============================================================================
+
+
+class TestCacheConfig:
+    """Tests for CacheConfig dataclass validation."""
+
+    def test_cache_config_defaults(self):
+        """Test CacheConfig has sensible defaults."""
+        from core.data.cache.manager import CacheConfig
+
+        config = CacheConfig()
+        assert config.max_size_bytes == 0  # Unlimited
+        assert config.max_entries == 0  # Unlimited
+        assert config.default_ttl_seconds == 86400  # 24 hours
+
+    def test_cache_config_validation_max_size(self):
+        """Test CacheConfig validates max_size_bytes."""
+        from core.data.cache.manager import CacheConfig
+
+        with pytest.raises(ValueError, match="max_size_bytes must be >= 0"):
+            CacheConfig(max_size_bytes=-1)
+
+    def test_cache_config_validation_max_entries(self):
+        """Test CacheConfig validates max_entries."""
+        from core.data.cache.manager import CacheConfig
+
+        with pytest.raises(ValueError, match="max_entries must be >= 0"):
+            CacheConfig(max_entries=-1)
+
+    def test_cache_config_validation_ttl(self):
+        """Test CacheConfig validates default_ttl_seconds."""
+        from core.data.cache.manager import CacheConfig
+
+        with pytest.raises(ValueError, match="default_ttl_seconds must be >= 0"):
+            CacheConfig(default_ttl_seconds=-1)
+
+    def test_cache_config_validation_cleanup_interval(self):
+        """Test CacheConfig validates cleanup_interval_seconds."""
+        from core.data.cache.manager import CacheConfig
+
+        with pytest.raises(ValueError, match="cleanup_interval_seconds must be >= 60"):
+            CacheConfig(cleanup_interval_seconds=30)
+
+
+class TestCacheEntry:
+    """Tests for CacheEntry dataclass."""
+
+    def test_cache_entry_to_dict(self):
+        """Test CacheEntry converts to dictionary."""
+        from core.data.cache.manager import CacheEntry, CacheEntryStatus
+
+        now = datetime.now(timezone.utc)
+        entry = CacheEntry(
+            cache_key="test-key",
+            storage_key="storage/test-key",
+            data_type="optical",
+            size_bytes=1024,
+            checksum="abc123",
+            status=CacheEntryStatus.ACTIVE,
+            created_at=now,
+            accessed_at=now,
+            access_count=5,
+            metadata={"source": "sentinel-2"},
+            tags={"flood", "miami"}
+        )
+
+        d = entry.to_dict()
+        assert d["cache_key"] == "test-key"
+        assert d["data_type"] == "optical"
+        assert d["status"] == "active"
+        assert "flood" in d["tags"]
+
+    def test_cache_entry_from_dict(self):
+        """Test CacheEntry creation from dictionary."""
+        from core.data.cache.manager import CacheEntry, CacheEntryStatus
+
+        data = {
+            "cache_key": "test-key",
+            "storage_key": "storage/test-key",
+            "data_type": "sar",
+            "size_bytes": 2048,
+            "checksum": "def456",
+            "status": "active",
+            "created_at": "2024-01-15T10:00:00+00:00",
+            "accessed_at": "2024-01-15T12:00:00+00:00",
+            "access_count": 10,
+            "metadata": {},
+            "tags": ["test"]
+        }
+
+        entry = CacheEntry.from_dict(data)
+        assert entry.cache_key == "test-key"
+        assert entry.data_type == "sar"
+        assert entry.status == CacheEntryStatus.ACTIVE
+
+    def test_cache_entry_is_expired_no_expiry(self):
+        """Test is_expired when no expiration is set."""
+        from core.data.cache.manager import CacheEntry
+
+        entry = CacheEntry(
+            cache_key="test",
+            storage_key="storage/test",
+            data_type="dem",
+            size_bytes=100,
+            checksum="xyz",
+            expires_at=None
+        )
+
+        assert entry.is_expired is False
+
+    def test_cache_entry_is_expired_future(self):
+        """Test is_expired when expiration is in the future."""
+        from core.data.cache.manager import CacheEntry
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        entry = CacheEntry(
+            cache_key="test",
+            storage_key="storage/test",
+            data_type="dem",
+            size_bytes=100,
+            checksum="xyz",
+            expires_at=future
+        )
+
+        assert entry.is_expired is False
+
+    def test_cache_entry_is_expired_past(self):
+        """Test is_expired when expiration is in the past."""
+        from core.data.cache.manager import CacheEntry
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        entry = CacheEntry(
+            cache_key="test",
+            storage_key="storage/test",
+            data_type="dem",
+            size_bytes=100,
+            checksum="xyz",
+            expires_at=past
+        )
+
+        assert entry.is_expired is True
+
+
+class TestCacheStatistics:
+    """Tests for CacheStatistics dataclass."""
+
+    def test_cache_statistics_hit_rate_zero(self):
+        """Test hit rate when no requests have been made."""
+        from core.data.cache.manager import CacheStatistics
+
+        stats = CacheStatistics(hits=0, misses=0)
+        assert stats.hit_rate == 0.0
+
+    def test_cache_statistics_hit_rate_all_hits(self):
+        """Test hit rate when all requests are hits."""
+        from core.data.cache.manager import CacheStatistics
+
+        stats = CacheStatistics(hits=100, misses=0)
+        assert stats.hit_rate == 1.0
+
+    def test_cache_statistics_hit_rate_mixed(self):
+        """Test hit rate with mixed hits and misses."""
+        from core.data.cache.manager import CacheStatistics
+
+        stats = CacheStatistics(hits=75, misses=25)
+        assert stats.hit_rate == 0.75
+
+    def test_cache_statistics_to_dict(self):
+        """Test CacheStatistics converts to dictionary."""
+        from core.data.cache.manager import CacheStatistics
+
+        stats = CacheStatistics(
+            total_entries=100,
+            active_entries=80,
+            expired_entries=10,
+            total_size_bytes=1024000,
+            hits=500,
+            misses=100,
+            evictions=20,
+            expirations=10
+        )
+
+        d = stats.to_dict()
+        assert d["total_entries"] == 100
+        assert d["hit_rate"] == pytest.approx(500/600)
+
+
+class TestCacheManager:
+    """Tests for CacheManager class."""
+
+    @pytest.fixture
+    def cache_db_path(self, temp_dir):
+        """Create a temporary cache database path."""
+        return temp_dir / "cache.db"
+
+    @pytest.fixture
+    def cache_manager(self, cache_db_path):
+        """Create a cache manager instance."""
+        from core.data.cache.manager import CacheConfig, CacheManager
+
+        config = CacheConfig(
+            max_size_bytes=1024 * 1024,  # 1 MB
+            max_entries=100,
+            default_ttl_seconds=3600,
+            db_path=cache_db_path
+        )
+        return CacheManager(config)
+
+    def test_cache_manager_initialization(self, cache_manager, cache_db_path):
+        """Test cache manager initializes database."""
+        assert cache_db_path.exists()
+        assert cache_manager.config is not None
+
+    def test_cache_manager_generate_key_deterministic(self, cache_manager):
+        """Test cache key generation is deterministic."""
+        key1 = cache_manager.generate_cache_key(
+            provider="sentinel-2",
+            dataset_id="S2A_MSIL2A_20240115",
+            bbox=[-80.0, 25.0, -79.0, 26.0],
+            temporal={"start": "2024-01-15", "end": "2024-01-20"}
+        )
+
+        key2 = cache_manager.generate_cache_key(
+            provider="sentinel-2",
+            dataset_id="S2A_MSIL2A_20240115",
+            bbox=[-80.0, 25.0, -79.0, 26.0],
+            temporal={"start": "2024-01-15", "end": "2024-01-20"}
+        )
+
+        assert key1 == key2
+        assert len(key1) == 32
+
+    def test_cache_manager_generate_key_different_params(self, cache_manager):
+        """Test different parameters produce different keys."""
+        key1 = cache_manager.generate_cache_key(
+            provider="sentinel-2",
+            dataset_id="S2A_MSIL2A_20240115"
+        )
+
+        key2 = cache_manager.generate_cache_key(
+            provider="sentinel-2",
+            dataset_id="S2A_MSIL2A_20240116"  # Different date
+        )
+
+        assert key1 != key2
+
+    def test_cache_manager_put_and_get(self, cache_manager):
+        """Test putting and getting cache entries."""
+        entry = cache_manager.put(
+            cache_key="test-put-get",
+            storage_key="storage/test-put-get",
+            data_type="optical",
+            size_bytes=1024,
+            checksum="abc123",
+            metadata={"source": "test"}
+        )
+
+        assert entry.cache_key == "test-put-get"
+
+        retrieved = cache_manager.get("test-put-get")
+
+        assert retrieved is not None
+        assert retrieved.cache_key == "test-put-get"
+        assert retrieved.data_type == "optical"
+
+    def test_cache_manager_get_nonexistent(self, cache_manager):
+        """Test getting a nonexistent entry returns None."""
+        result = cache_manager.get("nonexistent-key")
+        assert result is None
+
+    def test_cache_manager_contains(self, cache_manager):
+        """Test contains method."""
+        cache_manager.put(
+            cache_key="test-contains",
+            storage_key="storage/test-contains",
+            data_type="sar",
+            size_bytes=512,
+            checksum="def456"
+        )
+
+        assert cache_manager.contains("test-contains") is True
+        assert cache_manager.contains("nonexistent") is False
+
+    def test_cache_manager_invalidate(self, cache_manager):
+        """Test invalidating a cache entry."""
+        cache_manager.put(
+            cache_key="test-invalidate",
+            storage_key="storage/test-invalidate",
+            data_type="dem",
+            size_bytes=256,
+            checksum="ghi789"
+        )
+
+        assert cache_manager.contains("test-invalidate") is True
+
+        result = cache_manager.invalidate("test-invalidate")
+
+        assert result is True
+        assert cache_manager.contains("test-invalidate") is False
+
+    def test_cache_manager_invalidate_by_tag(self, cache_manager):
+        """Test invalidating entries by tag."""
+        cache_manager.put(
+            cache_key="test-tag-1",
+            storage_key="storage/test-tag-1",
+            data_type="optical",
+            size_bytes=100,
+            checksum="aaa",
+            tags={"miami", "flood"}
+        )
+
+        cache_manager.put(
+            cache_key="test-tag-2",
+            storage_key="storage/test-tag-2",
+            data_type="optical",
+            size_bytes=100,
+            checksum="bbb",
+            tags={"miami", "storm"}
+        )
+
+        cache_manager.put(
+            cache_key="test-tag-3",
+            storage_key="storage/test-tag-3",
+            data_type="optical",
+            size_bytes=100,
+            checksum="ccc",
+            tags={"houston", "flood"}
+        )
+
+        count = cache_manager.invalidate_by_tag("miami")
+
+        assert count == 2
+        assert cache_manager.contains("test-tag-1") is False
+        assert cache_manager.contains("test-tag-2") is False
+        assert cache_manager.contains("test-tag-3") is True
+
+    def test_cache_manager_delete(self, cache_manager):
+        """Test deleting a cache entry."""
+        cache_manager.put(
+            cache_key="test-delete",
+            storage_key="storage/test-delete",
+            data_type="vector",
+            size_bytes=128,
+            checksum="jkl012"
+        )
+
+        result = cache_manager.delete("test-delete", delete_storage=False)
+
+        assert result is True
+        assert cache_manager.contains("test-delete") is False
+
+        # Deleting again should return False
+        result = cache_manager.delete("test-delete", delete_storage=False)
+        assert result is False
+
+    def test_cache_manager_list_entries(self, cache_manager):
+        """Test listing cache entries with filters."""
+        for i in range(5):
+            cache_manager.put(
+                cache_key=f"test-list-{i}",
+                storage_key=f"storage/test-list-{i}",
+                data_type="optical" if i < 3 else "sar",
+                size_bytes=100 * (i + 1),
+                checksum=f"hash{i}"
+            )
+
+        all_entries = cache_manager.list_entries()
+        assert len(all_entries) == 5
+
+        optical_entries = cache_manager.list_entries(data_type="optical")
+        assert len(optical_entries) == 3
+
+        sar_entries = cache_manager.list_entries(data_type="sar")
+        assert len(sar_entries) == 2
+
+    def test_cache_manager_get_statistics(self, cache_manager):
+        """Test getting cache statistics."""
+        for i in range(3):
+            cache_manager.put(
+                cache_key=f"test-stats-{i}",
+                storage_key=f"storage/test-stats-{i}",
+                data_type="optical",
+                size_bytes=100,
+                checksum=f"hash{i}"
+            )
+
+        cache_manager.get("test-stats-0")  # Hit
+        cache_manager.get("test-stats-1")  # Hit
+        cache_manager.get("nonexistent-1")  # Miss
+        cache_manager.get("nonexistent-2")  # Miss
+
+        stats = cache_manager.get_statistics()
+
+        assert stats.active_entries == 3
+        assert stats.total_size_bytes == 300
+        assert stats.hits == 2
+        assert stats.misses == 2
+        assert stats.hit_rate == 0.5
+
+    def test_cache_manager_clear(self, cache_manager):
+        """Test clearing all cache entries."""
+        for i in range(5):
+            cache_manager.put(
+                cache_key=f"test-clear-{i}",
+                storage_key=f"storage/test-clear-{i}",
+                data_type="optical",
+                size_bytes=100,
+                checksum=f"hash{i}"
+            )
+
+        count = cache_manager.clear(delete_storage=False)
+
+        assert count == 5
+
+        stats = cache_manager.get_statistics()
+        assert stats.active_entries == 0
+
+    def test_cache_manager_access_updates_count(self, cache_manager):
+        """Test that accessing an entry updates its access count."""
+        cache_manager.put(
+            cache_key="test-access",
+            storage_key="storage/test-access",
+            data_type="optical",
+            size_bytes=100,
+            checksum="hash"
+        )
+
+        entry1 = cache_manager.get("test-access")
+        initial_count = entry1.access_count
+
+        entry2 = cache_manager.get("test-access")
+
+        assert entry2.access_count == initial_count + 1
+
+
+class TestCacheEviction:
+    """Tests for cache eviction policies."""
+
+    @pytest.fixture
+    def limited_cache(self, temp_dir):
+        """Create a cache with limited entries."""
+        from core.data.cache.manager import CacheConfig, CacheManager, EvictionPolicy
+
+        config = CacheConfig(
+            max_entries=3,
+            max_size_bytes=1000,
+            eviction_policy=EvictionPolicy.LRU,
+            db_path=temp_dir / "limited_cache.db"
+        )
+        return CacheManager(config)
+
+    def test_eviction_on_entry_limit(self, limited_cache):
+        """Test that entries are evicted when limit is reached."""
+        for i in range(3):
+            limited_cache.put(
+                cache_key=f"entry-{i}",
+                storage_key=f"storage/entry-{i}",
+                data_type="optical",
+                size_bytes=100,
+                checksum=f"hash{i}"
+            )
+
+        # Add a 4th entry - should trigger eviction
+        limited_cache.put(
+            cache_key="entry-3",
+            storage_key="storage/entry-3",
+            data_type="optical",
+            size_bytes=100,
+            checksum="hash3"
+        )
+
+        stats = limited_cache.get_statistics()
+        assert stats.active_entries <= 3
+        assert stats.evictions >= 1
+
+    def test_lru_eviction_policy(self, temp_dir):
+        """Test LRU eviction evicts least recently used entries."""
+        from core.data.cache.manager import CacheConfig, CacheManager, EvictionPolicy
+
+        config = CacheConfig(
+            max_entries=3,
+            eviction_policy=EvictionPolicy.LRU,
+            db_path=temp_dir / "lru_cache.db"
+        )
+        cache = CacheManager(config)
+
+        cache.put("entry-0", "s/0", "optical", 100, "h0")
+        cache.put("entry-1", "s/1", "optical", 100, "h1")
+        cache.put("entry-2", "s/2", "optical", 100, "h2")
+
+        # Access entry-0 and entry-2 (making entry-1 least recently used)
+        cache.get("entry-0")
+        cache.get("entry-2")
+
+        # Add a new entry
+        cache.put("entry-3", "s/3", "optical", 100, "h3")
+
+        # entry-1 should have been evicted
+        assert cache.contains("entry-0") is True
+        assert cache.contains("entry-1") is False  # LRU - should be evicted
+        assert cache.contains("entry-2") is True
+        assert cache.contains("entry-3") is True
+
+
+class TestCacheCleanup:
+    """Tests for cache cleanup operations."""
+
+    def test_cleanup_expired_entries(self, temp_dir):
+        """Test cleanup of expired cache entries."""
+        import time
+        from core.data.cache.manager import CacheConfig, CacheManager
+
+        config = CacheConfig(
+            default_ttl_seconds=1,  # Very short TTL
+            db_path=temp_dir / "expired_cache.db"
+        )
+        cache = CacheManager(config)
+
+        cache.put(
+            cache_key="expiring-entry",
+            storage_key="storage/expiring",
+            data_type="optical",
+            size_bytes=100,
+            checksum="hash",
+            ttl_seconds=1
+        )
+
+        assert cache.contains("expiring-entry") is True
+
+        # Wait for expiration
+        time.sleep(1.5)
+
+        # Entry should be expired now
+        assert cache.contains("expiring-entry") is False
+
+        # Cleanup removes expired entries
+        cleaned = cache.cleanup_expired(delete_storage=False)
+        assert cleaned >= 0  # May already be handled by contains check
+
+
+class TestCacheIntegration:
+    """Integration tests for cache with ingestion pipeline."""
+
+    @requires_rasterio
+    def test_cache_with_cog_product(self, temp_dir, sample_raster_data, sample_transform):
+        """Test caching a COG product through its lifecycle."""
+        from core.data.cache.manager import CacheConfig, CacheManager
+        from core.data.ingestion.formats.cog import COGConverter
+        import hashlib
+
+        # Create cache
+        config = CacheConfig(
+            db_path=temp_dir / "product_cache.db",
+            default_ttl_seconds=3600
+        )
+        cache = CacheManager(config)
+
+        # Create a COG product
+        cog_path = temp_dir / "flood_extent.tif"
+        converter = COGConverter()
+        result = converter.convert_array(
+            data=sample_raster_data,
+            output_path=cog_path,
+            transform=sample_transform,
+            crs="EPSG:4326"
+        )
+
+        # Generate cache key
+        cache_key = cache.generate_cache_key(
+            provider="analysis",
+            dataset_id="flood_extent",
+            bbox=[0.0, 0.0, 100.0, 100.0],
+            temporal={"start": "2024-09-15", "end": "2024-09-20"}
+        )
+
+        # Register in cache
+        entry = cache.put(
+            cache_key=cache_key,
+            storage_key=str(cog_path),
+            data_type="flood_product",
+            size_bytes=result.file_size_bytes,
+            checksum=hashlib.sha256(str(cog_path).encode()).hexdigest()[:32],
+            metadata={
+                "algorithm": "threshold_sar",
+                "confidence": 0.85,
+                "event_id": "hurricane_test_2024"
+            },
+            tags={"flood", "miami", "hurricane", "2024"}
+        )
+
+        assert entry is not None
+
+        # Retrieve and verify
+        retrieved = cache.get(cache_key)
+
+        assert retrieved is not None
+        assert retrieved.data_type == "flood_product"
+        assert retrieved.metadata["algorithm"] == "threshold_sar"
+        assert "miami" in retrieved.tags
+
+        # Clean up
+        cache.clear(delete_storage=False)
+
+    def test_cache_thread_safety(self, temp_dir):
+        """Test cache operations are thread-safe."""
+        import threading
+        from core.data.cache.manager import CacheConfig, CacheManager
+
+        config = CacheConfig(db_path=temp_dir / "thread_cache.db")
+        cache = CacheManager(config)
+
+        errors = []
+
+        def worker(worker_id: int):
+            try:
+                for i in range(10):
+                    cache_key = f"worker-{worker_id}-entry-{i}"
+                    cache.put(
+                        cache_key=cache_key,
+                        storage_key=f"storage/{cache_key}",
+                        data_type="optical",
+                        size_bytes=100,
+                        checksum=f"hash-{worker_id}-{i}"
+                    )
+                    cache.get(cache_key)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+
+        for t in threads:
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+
+        stats = cache.get_statistics()
+        assert stats.active_entries == 50
+
+
+# =============================================================================
+# Main entry point
+# =============================================================================
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

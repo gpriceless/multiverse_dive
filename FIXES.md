@@ -519,6 +519,9 @@ PYTHONPATH=. .venv/bin/pytest tests/test_flood_algorithms.py -v
 
 | Date | Fix ID | Status | Notes |
 |------|--------|--------|-------|
+| 2026-01-10 | NEW-013 | Fixed | Track 7 (G): NaN/Inf/negative resolution_m validation in IndexEntry - added __post_init__ to normalize invalid resolution values to 0.0 |
+| 2026-01-10 | NEW-012 | Fixed | Track 7 (G): SpatiotemporalIndex in-memory database bug in index.py - each _get_connection() call created a separate in-memory db, causing "no such table" errors. Fixed by keeping persistent connection for :memory: databases |
+| 2026-01-10 | NEW-011 | Fixed | Track 8 (G): Deprecated datetime.utcnow() in zarr.py - replaced with datetime.now(timezone.utc) for Python 3.12+ compatibility |
 | 2026-01-10 | NEW-010 | Fixed | Track 5 (G): Directory validation in integrity.py - validate_file() crashed with IsADirectoryError when passed a directory path instead of a file |
 | 2026-01-10 | NEW-009 | Fixed | Track 3 (G): Scale factor bug in resolution.py - resample_array used division instead of multiplication to calculate destination dimensions, causing upsampling/downsampling inversion |
 | 2026-01-10 | NEW-008 | Fixed | Track 4 (G): NaN handling in overviews.py _downsample_array - changed np.mean/max/min to np.nanmean/nanmax/nanmin |
