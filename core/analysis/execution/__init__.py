@@ -123,6 +123,26 @@ from .checkpoint import (
     AutoCheckpointer,
 )
 
+# Tiled runner module exports (Group L, Track 3)
+from .tiled_runner import (
+    # Enums
+    StitchMethod,
+    AggregationMethod,
+    # Data classes
+    TileContext,
+    TileResult,
+    ProcessingProgress,
+    TiledProcessingResult,
+    # Runner
+    TiledAlgorithmRunner,
+    # Stitcher
+    ResultStitcher,
+    # Utilities
+    check_algorithm_tiled_support,
+    run_algorithm_tiled,
+    estimate_tiles_for_memory,
+)
+
 __all__ = [
     # Runner - Enums
     "TaskStatus",
@@ -168,4 +188,19 @@ __all__ = [
     # Checkpoint - Manager
     "CheckpointManager",
     "AutoCheckpointer",
+    # Tiled Runner - Enums
+    "StitchMethod",
+    "AggregationMethod",
+    # Tiled Runner - Data
+    "TileContext",
+    "TileResult",
+    "ProcessingProgress",
+    "TiledProcessingResult",
+    # Tiled Runner - Classes
+    "TiledAlgorithmRunner",
+    "ResultStitcher",
+    # Tiled Runner - Utilities
+    "check_algorithm_tiled_support",
+    "run_algorithm_tiled",
+    "estimate_tiles_for_memory",
 ]

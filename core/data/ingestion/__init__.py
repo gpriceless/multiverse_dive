@@ -8,6 +8,7 @@ This module provides:
 - Data enrichment (overviews, statistics, quality)
 - Validation (integrity, anomaly, completeness)
 - Persistence with lineage tracking
+- Streaming data ingestion for memory-efficient processing
 """
 
 # Pipeline orchestration (Track 1 - may not be implemented yet)
@@ -105,3 +106,47 @@ if _PIPELINE_AVAILABLE:
         "JobStatus",
         "IngestionStage",
     ])
+
+# Streaming ingestion (Track 2 of Group L)
+try:
+    from core.data.ingestion.streaming import (
+        # Enums
+        DownloadStatus,
+        ProgressUnit,
+        # Data classes
+        DownloadProgress,
+        ChunkInfo,
+        WindowInfo,
+        StreamingConfig,
+        # Downloader
+        StreamingDownloader,
+        # Windowed reader
+        WindowedReader,
+        MemoryMappedReader,
+        # Streaming ingester
+        StreamingIngester,
+        # Utility functions
+        stream_download,
+        read_raster_window,
+        iterate_raster_tiles,
+        estimate_chunk_count,
+    )
+    _STREAMING_AVAILABLE = True
+    __all__.extend([
+        "DownloadStatus",
+        "ProgressUnit",
+        "DownloadProgress",
+        "ChunkInfo",
+        "WindowInfo",
+        "StreamingConfig",
+        "StreamingDownloader",
+        "WindowedReader",
+        "MemoryMappedReader",
+        "StreamingIngester",
+        "stream_download",
+        "read_raster_window",
+        "iterate_raster_tiles",
+        "estimate_chunk_count",
+    ])
+except ImportError:
+    _STREAMING_AVAILABLE = False
