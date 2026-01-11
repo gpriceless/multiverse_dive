@@ -8,12 +8,14 @@ Markers:
     @pytest.mark.slow - Tests that take longer to run
     @pytest.mark.integration - Integration tests requiring external resources
     @pytest.mark.quality - Quality control and uncertainty tests
+    @pytest.mark.agents - Agent orchestration tests
 
 Usage:
     pytest -m flood              # Run only flood tests
     pytest -m "not slow"         # Skip slow tests
     pytest -m "flood and not slow"  # Fast flood tests only
     pytest -m quality            # Run quality control tests
+    pytest -m agents             # Run agent tests
 """
 
 import pytest
@@ -37,6 +39,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "intent: Intent resolution tests")
     config.addinivalue_line("markers", "provider: Data provider tests")
     config.addinivalue_line("markers", "quality: Quality control tests")
+    config.addinivalue_line("markers", "agents: Agent orchestration tests")
 
 
 def pytest_collection_modifyitems(config, items):
