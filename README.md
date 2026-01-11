@@ -111,9 +111,23 @@ PYTHONPATH=. .venv/bin/pytest tests/ -v
 
 ## Current Status
 
-- **Groups A-E Complete**: Schemas, validation, intent resolution, data discovery, baseline algorithms
-- **Group F Next**: Intelligent selection systems (constraint evaluation, multi-criteria ranking)
-- **16 Known Bugs**: Tracked in [FIXES.md](FIXES.md), being addressed incrementally
+| Group | Status | Description |
+|-------|--------|-------------|
+| **A** | ✅ Complete | Foundation schemas, project structure |
+| **B** | ✅ Complete | Schema validation, examples |
+| **C** | ✅ Complete | Intent resolution, NLP classification |
+| **D** | ✅ Complete | Data discovery, provider implementations |
+| **E** | ✅ Complete | Algorithm library (flood, wildfire, storm) |
+| **F** | ✅ Complete | Intelligent selection (constraints, ranking, sensor strategy) |
+| **G** | ✅ Complete | Ingestion & normalization pipeline |
+| **H** | ✅ Complete | Fusion & analysis engine |
+| **I** | ✅ Complete | Quality control (sanity, validation, uncertainty, reporting) |
+| **J** | 🔜 Next | Agent orchestration |
+| **K** | 📋 Planned | API gateway & deployment |
+| **L** | 📋 Planned | Lightweight CLI execution |
+| **M-N** | 📋 Planned | Resilience, containerization |
+
+**Test Coverage**: 2,385 tests passing (44 skipped for optional deps, 4 minor failures in new execution code)
 
 See [ROADMAP.md](ROADMAP.md) for detailed implementation progress.
 
