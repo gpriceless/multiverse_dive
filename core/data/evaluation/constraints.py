@@ -204,6 +204,32 @@ class ConstraintEvaluator:
             score_function=self._score_data_availability
         ))
 
+        # Additional soft constraints for comprehensive evaluation
+        self.register_soft_constraint(SoftConstraint(
+            name="sar_noise_quality",
+            description="SAR noise quality assessment",
+            score_function=self._score_sar_noise,
+            applies_to_data_types=["sar"]
+        ))
+
+        self.register_soft_constraint(SoftConstraint(
+            name="geometric_accuracy",
+            description="Geometric distortion and accuracy",
+            score_function=self._score_geometric_accuracy
+        ))
+
+        self.register_soft_constraint(SoftConstraint(
+            name="aoi_proximity",
+            description="Proximity to center of area of interest",
+            score_function=self._score_aoi_proximity
+        ))
+
+        self.register_soft_constraint(SoftConstraint(
+            name="view_angle_quality",
+            description="View/incidence angle quality",
+            score_function=self._score_view_angle
+        ))
+
     def register_hard_constraint(self, constraint: HardConstraint):
         """Register a hard constraint."""
         self.hard_constraints.append(constraint)
@@ -249,7 +275,7 @@ class ConstraintEvaluator:
         # Evaluate soft constraints (even if hard constraints failed, for diagnostics)
         total_score = 0.0
         total_weight = 0.0
-        weights = context.get("soft_weights", {})
+        weights = context.get("soft_weights") or {}
 
         for constraint in self.soft_constraints:
             if not constraint.applies_to(candidate.data_type):
@@ -371,8 +397,11 @@ class ConstraintEvaluator:
     @staticmethod
     def _score_resolution(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
         """Score spatial resolution (higher resolution = better)."""
+        # Clamp resolution to valid positive range (handle invalid negative values)
+        resolution = max(0.0, candidate.resolution_m)
+
         # Logarithmic scoring: 10m = 1.0, 30m = 0.74, 100m = 0.37
-        score = math.exp(-candidate.resolution_m / 100.0)
+        score = math.exp(-resolution / 100.0)
         return min(score, 1.0)
 
     @staticmethod
@@ -381,8 +410,11 @@ class ConstraintEvaluator:
         if candidate.cloud_cover_percent is None:
             return 1.0  # N/A for non-optical, perfect score
 
+        # Clamp cloud cover to valid range [0, 100] to handle invalid data
+        cloud_cover = max(0.0, min(100.0, candidate.cloud_cover_percent))
+
         # Inverse linear: 0% = 1.0, 50% = 0.5, 100% = 0.0
-        return 1.0 - (candidate.cloud_cover_percent / 100.0)
+        return 1.0 - (cloud_cover / 100.0)
 
     @staticmethod
     def _score_data_availability(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
@@ -401,6 +433,189 @@ class ConstraintEvaluator:
         }
 
         return cost_scores.get(cost_tier, 0.5)
+
+    @staticmethod
+    def _score_sar_noise(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
+        """
+        Score SAR data quality based on noise characteristics.
+
+        Uses metadata fields like equivalent_number_of_looks, noise_floor_db,
+        or general quality indicators.
+        """
+        if not candidate.metadata:
+            return 0.7  # Neutral score if no metadata
+
+        # Check for equivalent number of looks (higher = less speckle)
+        enl = candidate.metadata.get("equivalent_number_of_looks")
+        if enl is not None:
+            # ENL of 1 = noisy, ENL of 4+ = good
+            return min(1.0, enl / 4.0)
+
+        # Check for noise floor
+        noise_db = candidate.metadata.get("noise_floor_db")
+        if noise_db is not None:
+            # Lower noise floor is better. -20 dB = excellent, -10 dB = poor
+            # Normalize: -25 to -15 range mapped to 1.0 to 0.0
+            score = (noise_db + 25) / 10.0
+            return max(0.0, min(1.0, 1.0 - score))
+
+        # Check general quality metadata
+        sar_quality = candidate.metadata.get("sar_quality")
+        if sar_quality:
+            quality_scores = {
+                "excellent": 1.0,
+                "good": 0.8,
+                "fair": 0.6,
+                "poor": 0.3,
+                "bad": 0.1
+            }
+            return quality_scores.get(sar_quality.lower(), 0.5)
+
+        # Default neutral score
+        return 0.7
+
+    @staticmethod
+    def _score_geometric_accuracy(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
+        """
+        Score geometric accuracy and distortion.
+
+        Uses metadata fields like absolute_geolocation_accuracy_m,
+        relative_geolocation_accuracy_m, or orthorectification status.
+        """
+        if not candidate.metadata:
+            return 0.7  # Neutral if no metadata
+
+        # Check for absolute geolocation accuracy
+        abs_accuracy_m = candidate.metadata.get("absolute_geolocation_accuracy_m")
+        if abs_accuracy_m is not None:
+            # 1m = excellent, 10m = good, 50m+ = poor
+            # Exponential scoring with 10m characteristic length
+            score = math.exp(-abs_accuracy_m / 10.0)
+            return max(0.0, min(1.0, score))
+
+        # Check orthorectification status
+        is_ortho = candidate.metadata.get("orthorectified")
+        if is_ortho is not None:
+            return 1.0 if is_ortho else 0.6
+
+        # Check processing level (higher = typically better geometry)
+        processing_level = candidate.metadata.get("processing_level", "")
+        level_scores = {
+            "L2A": 1.0,  # Analysis-ready
+            "L2": 0.95,
+            "L1C": 0.85,
+            "L1": 0.75,
+            "L0": 0.5
+        }
+        for level, score in level_scores.items():
+            if level in processing_level.upper():
+                return score
+
+        # Default neutral score
+        return 0.7
+
+    @staticmethod
+    def _score_aoi_proximity(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
+        """
+        Score proximity to center of area of interest.
+
+        Prefers datasets where the scene center is close to the AOI center,
+        as this typically means better coverage of the key area.
+        """
+        if not candidate.metadata:
+            return 0.8  # Neutral if no metadata
+
+        # Check for scene center coordinates
+        scene_center = candidate.metadata.get("scene_center")
+        aoi_center = context.get("aoi_center")
+
+        if scene_center and aoi_center:
+            # Calculate approximate distance (simple Euclidean for small areas)
+            # For production, use proper geodesic distance
+            lat1, lon1 = scene_center
+            lat2, lon2 = aoi_center
+
+            # Approximate degrees to km (rough)
+            lat_diff_km = abs(lat1 - lat2) * 111.0
+            lon_diff_km = abs(lon1 - lon2) * 111.0 * math.cos(math.radians((lat1 + lat2) / 2))
+            distance_km = math.sqrt(lat_diff_km**2 + lon_diff_km**2)
+
+            # Score: 0km = 1.0, 50km = 0.6, 100km = 0.4
+            # Exponential decay with 50km characteristic length
+            score = math.exp(-distance_km / 50.0)
+            return max(0.2, min(1.0, score))
+
+        # Check for tile/granule identifier suggesting proximity
+        tile_id = candidate.metadata.get("tile_id") or candidate.metadata.get("granule_id")
+        target_tile = context.get("target_tile")
+
+        if tile_id and target_tile:
+            return 1.0 if tile_id == target_tile else 0.6
+
+        # High coverage usually means good proximity
+        if candidate.spatial_coverage_percent >= 95:
+            return 0.95
+        elif candidate.spatial_coverage_percent >= 80:
+            return 0.85
+
+        return 0.7
+
+    @staticmethod
+    def _score_view_angle(candidate: DiscoveryResult, context: Dict[str, Any]) -> float:
+        """
+        Score view/incidence angle quality.
+
+        For optical: nadir (0°) is best, steep angles cause distortion
+        For SAR: moderate incidence angles (30-45°) are often optimal
+        """
+        if not candidate.metadata:
+            return 0.75  # Neutral if no metadata
+
+        data_type = candidate.data_type
+
+        if data_type == "optical":
+            # Check view angle (off-nadir angle)
+            view_angle = candidate.metadata.get("view_angle")
+            if view_angle is None:
+                view_angle = candidate.metadata.get("off_nadir_angle")
+            if view_angle is not None:
+                # 0° = 1.0, 15° = 0.8, 30° = 0.5, 45° = 0.25
+                score = math.exp(-view_angle / 20.0)
+                return max(0.1, min(1.0, score))
+
+            # Check sun elevation (higher = better for optical)
+            sun_elevation = candidate.metadata.get("sun_elevation")
+            if sun_elevation is not None:
+                # 90° = 1.0, 45° = 0.75, 20° = 0.4
+                score = sun_elevation / 90.0
+                return max(0.1, min(1.0, score))
+
+        elif data_type == "sar":
+            # Check incidence angle (30-45° is optimal for many SAR applications)
+            incidence_angle = candidate.metadata.get("incidence_angle")
+            if incidence_angle is not None:
+                # Optimal range: 30-45°
+                # Score drops for very steep (<20°) or grazing (>55°) angles
+                if 30 <= incidence_angle <= 45:
+                    return 1.0
+                elif 20 <= incidence_angle < 30 or 45 < incidence_angle <= 55:
+                    return 0.8
+                else:
+                    # Poor angle - significant geometric distortion
+                    distance_from_optimal = min(
+                        abs(incidence_angle - 30),
+                        abs(incidence_angle - 45)
+                    )
+                    return max(0.3, 1.0 - distance_from_optimal / 30.0)
+
+            # Check look direction (ascending vs descending)
+            look_direction = candidate.metadata.get("look_direction")
+            if look_direction:
+                # Both are valid, but might have preference based on terrain
+                return 0.85
+
+        # Default moderate score
+        return 0.75
 
 
 # Convenience functions for common use cases

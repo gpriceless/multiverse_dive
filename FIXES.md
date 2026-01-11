@@ -519,5 +519,8 @@ PYTHONPATH=. .venv/bin/pytest tests/test_flood_algorithms.py -v
 
 | Date | Fix ID | Status | Notes |
 |------|--------|--------|-------|
+| 2026-01-10 | NEW-004 | Fixed | Track 1: None handling in soft_weights context (AttributeError when soft_weights was None) |
+| 2026-01-10 | NEW-003 | Fixed | Track 1: Resolution score clamping bug in constraints.py (negative values produced invalid scores > 1.0) |
+| 2026-01-10 | NEW-002 | Fixed | Track 1: Cloud cover score clamping bug in constraints.py (negative/over 100% values produced invalid scores) |
 | 2026-01-10 | NEW-001 | Fixed | Track 4: Degraded mode threshold bug in strategy.py (MEDIUM confidence incorrectly treated as degraded) |
 | 2026-01-09 | All | Documented | Initial code review completed |
