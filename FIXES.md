@@ -14,11 +14,11 @@ This document tracks bugs, hallucinated APIs, and issues discovered during code 
 
 ## P0: Critical Fixes
 
-### FIX-001: broker.py - Calling .get() on Provider dataclass
+### FIX-001: broker.py - Calling .get() on Provider dataclass **[FIXED]**
 
 **File:** `core/data/broker.py`
 **Line:** 455
-**Status:** Open
+**Status:** Fixed (2026-01-10, Track 1 agent)
 **Category:** Hallucinated API
 
 **Problem:**
@@ -43,11 +43,11 @@ if provider_info:
 
 ---
 
-### FIX-002: broker.py - Hallucinated candidates attribute
+### FIX-002: broker.py - Hallucinated candidates attribute **[FIXED]**
 
 **File:** `core/data/broker.py`
 **Line:** 152
-**Status:** Open
+**Status:** Fixed (2026-01-10, Track 1 agent)
 **Category:** Hallucinated attribute
 
 **Problem:**
@@ -519,4 +519,5 @@ PYTHONPATH=. .venv/bin/pytest tests/test_flood_algorithms.py -v
 
 | Date | Fix ID | Status | Notes |
 |------|--------|--------|-------|
+| 2026-01-10 | NEW-001 | Fixed | Track 4: Degraded mode threshold bug in strategy.py (MEDIUM confidence incorrectly treated as degraded) |
 | 2026-01-09 | All | Documented | Initial code review completed |
