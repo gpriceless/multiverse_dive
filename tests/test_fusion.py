@@ -6,6 +6,7 @@ and temporal densification for improved time series coverage.
 """
 
 import pytest
+import numpy as np
 from datetime import datetime, timedelta, timezone
 
 from core.data.discovery.base import DiscoveryResult
@@ -1238,3 +1239,1275 @@ class TestFusionEdgeCases:
         # Temporal strategy selects all candidates
         assert "sar" in plan.datasets
         assert len(plan.datasets["sar"]) == 4
+
+
+# ============================================================================
+# FUSION CORE TESTS (core/analysis/fusion)
+# Tests for multi-sensor alignment, corrections, conflict resolution,
+# and uncertainty propagation.
+# ============================================================================
+
+from core.analysis.fusion import (
+    # Alignment
+    SpatialAlignmentMethod,
+    TemporalAlignmentMethod,
+    AlignmentQuality,
+    ReferenceGrid,
+    TemporalBin,
+    SpatialAlignmentConfig,
+    TemporalAlignmentConfig,
+    AlignedLayer,
+    AlignmentResult,
+    SpatialAligner,
+    TemporalAligner,
+    MultiSensorAligner,
+    create_reference_grid,
+    align_datasets,
+    # Corrections
+    TerrainCorrectionMethod,
+    AtmosphericCorrectionMethod,
+    NormalizationMethod,
+    TerrainCorrectionConfig,
+    AtmosphericCorrectionConfig,
+    NormalizationConfig,
+    CorrectionResult,
+    TerrainCorrector,
+    AtmosphericCorrector,
+    RadiometricNormalizer,
+    CorrectionPipeline,
+    apply_terrain_correction,
+    apply_atmospheric_correction,
+    normalize_to_reference,
+    # Conflict Resolution
+    ConflictResolutionStrategy,
+    ConflictSeverity,
+    ConflictThresholds,
+    ConflictConfig,
+    SourceLayer,
+    ConflictMap,
+    ConflictResolutionResult,
+    ConflictDetector,
+    ConflictResolver,
+    ConsensusBuilder,
+    detect_conflicts,
+    resolve_conflicts,
+    build_consensus,
+    # Uncertainty
+    UncertaintyType,
+    UncertaintySource,
+    PropagationMethod,
+    UncertaintyComponent,
+    UncertaintyBudget,
+    UncertaintyMap,
+    PropagationConfig,
+    UncertaintyPropagator,
+    UncertaintyCombiner,
+    FusionUncertaintyEstimator,
+    estimate_uncertainty_from_samples,
+    propagate_through_operation,
+    combine_uncertainties,
+)
+
+import numpy as np
+
+
+# ============================================================================
+# Alignment Tests
+# ============================================================================
+
+class TestReferenceGrid:
+    """Test reference grid dataclass."""
+
+    def test_basic_creation(self):
+        """Test creating a basic reference grid."""
+        grid = ReferenceGrid(
+            crs="EPSG:4326",
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution_x=0.01,
+            resolution_y=0.01,
+        )
+
+        assert grid.crs == "EPSG:4326"
+        assert grid.bounds == (0.0, 0.0, 1.0, 1.0)
+        assert grid.width == 100
+        assert grid.height == 100
+
+    def test_explicit_dimensions(self):
+        """Test creating a grid with explicit dimensions."""
+        grid = ReferenceGrid(
+            crs="EPSG:32610",
+            bounds=(500000, 4000000, 600000, 4100000),
+            resolution_x=100.0,
+            resolution_y=100.0,
+            width=1000,
+            height=1000,
+        )
+
+        assert grid.width == 1000
+        assert grid.height == 1000
+
+    def test_transform_property(self):
+        """Test affine transform property."""
+        grid = ReferenceGrid(
+            crs="EPSG:4326",
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution_x=0.1,
+            resolution_y=0.1,
+        )
+
+        transform = grid.transform
+        assert transform[0] == 0.0  # x origin
+        assert transform[1] == 0.1  # x pixel size
+        assert transform[3] == 1.0  # y origin
+        assert transform[5] == -0.1  # y pixel size (negative for north-up)
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        grid = ReferenceGrid(
+            crs="EPSG:4326",
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution_x=0.01,
+            resolution_y=0.01,
+        )
+
+        data = grid.to_dict()
+        assert "crs" in data
+        assert "bounds" in data
+        assert "width" in data
+        assert "height" in data
+
+
+class TestTemporalBin:
+    """Test temporal bin dataclass."""
+
+    def test_basic_creation(self):
+        """Test creating a temporal bin."""
+        start = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2024, 1, 16, 0, 0, tzinfo=timezone.utc)
+
+        bin_obj = TemporalBin(start=start, end=end)
+
+        assert bin_obj.duration_hours == 24.0
+        assert bin_obj.center == datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+
+    def test_contains(self):
+        """Test timestamp containment check."""
+        start = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2024, 1, 16, 0, 0, tzinfo=timezone.utc)
+
+        bin_obj = TemporalBin(start=start, end=end)
+
+        # Inside
+        assert bin_obj.contains(datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc))
+        # At start (inclusive)
+        assert bin_obj.contains(start)
+        # At end (exclusive)
+        assert not bin_obj.contains(end)
+        # Outside
+        assert not bin_obj.contains(datetime(2024, 1, 14, 12, 0, tzinfo=timezone.utc))
+
+
+class TestAlignedLayer:
+    """Test aligned layer dataclass."""
+
+    def test_basic_creation(self):
+        """Test creating an aligned layer."""
+        data = np.random.rand(100, 100).astype(np.float32)
+        timestamp = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+
+        layer = AlignedLayer(
+            data=data,
+            source_id="test_001",
+            sensor_type="optical",
+            timestamp=timestamp,
+        )
+
+        assert layer.source_id == "test_001"
+        assert layer.sensor_type == "optical"
+        assert layer.alignment_quality == AlignmentQuality.GOOD
+        assert layer.quality_mask is not None
+
+    def test_valid_fraction(self):
+        """Test valid fraction calculation."""
+        data = np.full((100, 100), 1.0, dtype=np.float32)
+        data[0:50, :] = np.nan  # 50% invalid
+
+        layer = AlignedLayer(
+            data=data,
+            source_id="test_001",
+            sensor_type="sar",
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        assert 0.49 <= layer.valid_fraction <= 0.51
+
+
+class TestSpatialAligner:
+    """Test spatial aligner."""
+
+    @pytest.fixture
+    def aligner(self):
+        """Create spatial aligner with reference grid."""
+        grid = ReferenceGrid(
+            crs="EPSG:4326",
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution_x=0.01,
+            resolution_y=0.01,
+        )
+        config = SpatialAlignmentConfig(
+            method=SpatialAlignmentMethod.RESAMPLE_BILINEAR,
+            reference_grid=grid,
+        )
+        return SpatialAligner(config)
+
+    def test_align_same_crs(self, aligner):
+        """Test alignment with same CRS."""
+        data = np.random.rand(50, 50).astype(np.float32)
+
+        layer = aligner.align(
+            data=data,
+            source_crs="EPSG:4326",
+            source_bounds=(0.0, 0.0, 1.0, 1.0),
+            source_resolution=(0.02, 0.02),
+            source_id="test_001",
+            sensor_type="optical",
+        )
+
+        assert layer.data.shape == (100, 100)
+        assert layer.source_id == "test_001"
+        assert layer.alignment_quality in [AlignmentQuality.EXCELLENT, AlignmentQuality.GOOD]
+
+    def test_align_multiple(self, aligner):
+        """Test aligning multiple datasets."""
+        datasets = [
+            {
+                "data": np.random.rand(50, 50).astype(np.float32),
+                "source_crs": "EPSG:4326",
+                "source_bounds": (0.0, 0.0, 1.0, 1.0),
+                "source_resolution": (0.02, 0.02),
+                "source_id": f"source_{i}",
+                "sensor_type": "optical",
+                "timestamp": datetime(2024, 1, 15, i, 0, tzinfo=timezone.utc),
+            }
+            for i in range(3)
+        ]
+
+        layers = aligner.align_multiple(datasets)
+
+        assert len(layers) == 3
+        assert all(l.data.shape == (100, 100) for l in layers)
+
+    def test_create_reference_grid(self, aligner):
+        """Test reference grid creation."""
+        grid = aligner.create_reference_grid(
+            bounds=(0.0, 0.0, 10.0, 10.0),
+            crs="EPSG:4326",
+            resolution=0.1,
+        )
+
+        assert grid.width == 100
+        assert grid.height == 100
+
+    def test_no_reference_grid_error(self):
+        """Test error when no reference grid is set."""
+        aligner = SpatialAligner()
+
+        with pytest.raises(ValueError, match="Reference grid not configured"):
+            aligner.align(
+                data=np.random.rand(50, 50),
+                source_crs="EPSG:4326",
+                source_bounds=(0.0, 0.0, 1.0, 1.0),
+                source_resolution=(0.02, 0.02),
+            )
+
+
+class TestTemporalAligner:
+    """Test temporal aligner."""
+
+    @pytest.fixture
+    def aligner(self):
+        """Create temporal aligner."""
+        config = TemporalAlignmentConfig(
+            method=TemporalAlignmentMethod.LINEAR,
+            max_gap_hours=48.0,
+        )
+        return TemporalAligner(config)
+
+    @pytest.fixture
+    def sample_layers(self):
+        """Create sample aligned layers."""
+        base_time = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+        layers = []
+        for i in range(4):
+            layer = AlignedLayer(
+                data=np.full((100, 100), float(i), dtype=np.float32),
+                source_id=f"layer_{i}",
+                sensor_type="sar",
+                timestamp=base_time + timedelta(hours=i * 6),
+            )
+            layers.append(layer)
+        return layers
+
+    def test_align_to_timestamps(self, aligner, sample_layers):
+        """Test alignment to specific timestamps."""
+        target = [
+            datetime(2024, 1, 15, 3, 0, tzinfo=timezone.utc),  # Between 0 and 6
+            datetime(2024, 1, 15, 15, 0, tzinfo=timezone.utc),  # Between 12 and 18
+        ]
+
+        aligned = aligner.align_to_timestamps(sample_layers, target)
+
+        assert len(aligned) == 2
+        assert aligned[0].timestamp == target[0]
+        assert aligned[1].timestamp == target[1]
+
+    def test_align_to_bins(self, aligner, sample_layers):
+        """Test alignment to temporal bins."""
+        start = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2024, 1, 16, 0, 0, tzinfo=timezone.utc)
+
+        layers, bins = aligner.align_to_bins(sample_layers, start, end, bin_duration_hours=12.0)
+
+        assert len(bins) == 2
+        assert len(layers) >= 1
+
+    def test_create_dense_timeseries(self, aligner, sample_layers):
+        """Test dense time series creation."""
+        dense = aligner.create_dense_timeseries(
+            sample_layers,
+            time_step_hours=2.0,
+        )
+
+        # Should have more layers than input
+        assert len(dense) >= len(sample_layers)
+
+
+class TestMultiSensorAligner:
+    """Test multi-sensor aligner."""
+
+    @pytest.fixture
+    def aligner(self):
+        """Create multi-sensor aligner."""
+        spatial_config = SpatialAlignmentConfig(
+            method=SpatialAlignmentMethod.RESAMPLE_BILINEAR,
+        )
+        temporal_config = TemporalAlignmentConfig(
+            method=TemporalAlignmentMethod.LINEAR,
+        )
+        return MultiSensorAligner(spatial_config, temporal_config)
+
+    def test_align_complete(self, aligner):
+        """Test complete spatial and temporal alignment."""
+        base_time = datetime(2024, 1, 15, 0, 0, tzinfo=timezone.utc)
+        datasets = [
+            {
+                "data": np.random.rand(50, 50).astype(np.float32),
+                "source_crs": "EPSG:4326",
+                "source_bounds": (0.0, 0.0, 1.0, 1.0),
+                "source_resolution": (0.02, 0.02),
+                "source_id": f"source_{i}",
+                "sensor_type": "sar" if i % 2 == 0 else "optical",
+                "timestamp": base_time + timedelta(hours=i * 6),
+            }
+            for i in range(4)
+        ]
+
+        grid = ReferenceGrid(
+            crs="EPSG:4326",
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution_x=0.01,
+            resolution_y=0.01,
+        )
+
+        result = aligner.align(datasets, grid)
+
+        assert isinstance(result, AlignmentResult)
+        assert len(result.layers) == 4
+        assert result.coverage_map is not None
+
+
+class TestConvenienceFunctionsAlignment:
+    """Test alignment convenience functions."""
+
+    def test_create_reference_grid_convenience(self):
+        """Test create_reference_grid convenience function."""
+        grid = create_reference_grid(
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            crs="EPSG:4326",
+            resolution=0.01,
+        )
+
+        assert grid.width == 100
+        assert grid.height == 100
+
+    def test_align_datasets_convenience(self):
+        """Test align_datasets convenience function."""
+        datasets = [
+            {
+                "data": np.random.rand(50, 50).astype(np.float32),
+                "source_crs": "EPSG:4326",
+                "source_bounds": (0.0, 0.0, 1.0, 1.0),
+                "source_resolution": (0.02, 0.02),
+                "source_id": "test",
+                "sensor_type": "optical",
+                "timestamp": datetime.now(timezone.utc),
+            }
+        ]
+
+        grid = create_reference_grid(
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            resolution=0.01,
+        )
+
+        result = align_datasets(datasets, grid)
+
+        assert isinstance(result, AlignmentResult)
+
+
+# ============================================================================
+# Corrections Tests
+# ============================================================================
+
+class TestTerrainCorrector:
+    """Test terrain corrector."""
+
+    @pytest.fixture
+    def dem(self):
+        """Create synthetic DEM."""
+        x = np.linspace(0, 100, 100)
+        y = np.linspace(0, 100, 100)
+        xx, yy = np.meshgrid(x, y)
+        # Sloped terrain with some variation
+        dem = 100 + xx * 0.5 + yy * 0.3 + 10 * np.sin(xx / 10) * np.cos(yy / 10)
+        return dem.astype(np.float32)
+
+    @pytest.fixture
+    def corrector(self, dem):
+        """Create terrain corrector."""
+        config = TerrainCorrectionConfig(
+            method=TerrainCorrectionMethod.COSINE,
+            dem=dem,
+            dem_resolution=30.0,
+            sun_elevation_deg=45.0,
+            sun_azimuth_deg=180.0,
+        )
+        return TerrainCorrector(config)
+
+    def test_cosine_correction(self, corrector):
+        """Test cosine terrain correction."""
+        data = np.random.rand(100, 100).astype(np.float32) * 1000
+
+        result = corrector.correct(data)
+
+        assert isinstance(result, CorrectionResult)
+        assert result.corrected_data.shape == data.shape
+        assert result.correction_factor is not None
+        assert result.quality_mask is not None
+
+    def test_minnaert_correction(self, dem):
+        """Test Minnaert terrain correction."""
+        config = TerrainCorrectionConfig(
+            method=TerrainCorrectionMethod.MINNAERT,
+            dem=dem,
+            minnaert_k=0.5,
+        )
+        corrector = TerrainCorrector(config)
+
+        data = np.random.rand(100, 100).astype(np.float32) * 1000
+        result = corrector.correct(data)
+
+        assert result.correction_type == "terrain_minnaert"
+
+    def test_no_dem_warning(self):
+        """Test warning when no DEM is provided."""
+        corrector = TerrainCorrector()
+        data = np.random.rand(100, 100).astype(np.float32)
+
+        result = corrector.correct(data)
+
+        assert result.correction_type == "none"
+
+
+class TestAtmosphericCorrector:
+    """Test atmospheric corrector."""
+
+    @pytest.fixture
+    def corrector(self):
+        """Create atmospheric corrector."""
+        config = AtmosphericCorrectionConfig(
+            method=AtmosphericCorrectionMethod.DOS,
+            solar_zenith_deg=30.0,
+        )
+        return AtmosphericCorrector(config)
+
+    def test_dos_correction(self, corrector):
+        """Test dark object subtraction."""
+        # Create data with dark objects
+        data = np.random.rand(100, 100).astype(np.float32) * 1000 + 100
+
+        result = corrector.correct(data)
+
+        assert isinstance(result, CorrectionResult)
+        assert result.corrected_data.shape == data.shape
+        assert result.corrected_data.min() >= 0  # No negative values
+
+    def test_multiband_dos(self, corrector):
+        """Test DOS on multi-band data."""
+        data = np.random.rand(100, 100, 4).astype(np.float32) * 1000 + 100
+
+        result = corrector.correct(data)
+
+        assert result.corrected_data.shape == data.shape
+
+    def test_toar_correction(self):
+        """Test TOAR conversion."""
+        config = AtmosphericCorrectionConfig(
+            method=AtmosphericCorrectionMethod.TOAR,
+            solar_zenith_deg=30.0,
+        )
+        corrector = AtmosphericCorrector(config)
+
+        data = np.random.rand(100, 100).astype(np.float32) * 10000
+
+        result = corrector.correct(data)
+
+        # TOAR should produce reflectance-like values [0, 1]
+        assert result.corrected_data.max() <= 1.0
+        assert result.corrected_data.min() >= 0.0
+
+
+class TestRadiometricNormalizer:
+    """Test radiometric normalizer."""
+
+    @pytest.fixture
+    def reference(self):
+        """Create reference data."""
+        return np.random.rand(100, 100).astype(np.float32) * 100 + 50
+
+    @pytest.fixture
+    def normalizer(self, reference):
+        """Create normalizer with reference."""
+        config = NormalizationConfig(
+            method=NormalizationMethod.HISTOGRAM_MATCHING,
+        )
+        normalizer = RadiometricNormalizer(config)
+        normalizer.set_reference(reference)
+        return normalizer
+
+    def test_histogram_matching(self, normalizer):
+        """Test histogram matching normalization."""
+        # Data with different distribution
+        data = np.random.rand(100, 100).astype(np.float32) * 200 + 100
+
+        result = normalizer.normalize(data)
+
+        assert isinstance(result, CorrectionResult)
+        assert result.corrected_data.shape == data.shape
+
+    def test_relative_normalization(self, reference):
+        """Test relative normalization."""
+        config = NormalizationConfig(method=NormalizationMethod.RELATIVE)
+        normalizer = RadiometricNormalizer(config)
+        normalizer.set_reference(reference)
+
+        data = np.random.rand(100, 100).astype(np.float32) * 200 + 100
+        result = normalizer.normalize(data)
+
+        assert result.correction_type == "normalization_relative"
+
+    def test_no_reference_warning(self):
+        """Test warning when no reference is set."""
+        normalizer = RadiometricNormalizer()
+        data = np.random.rand(100, 100).astype(np.float32)
+
+        result = normalizer.normalize(data)
+
+        assert result.correction_type == "none"
+
+
+class TestCorrectionPipeline:
+    """Test correction pipeline."""
+
+    @pytest.fixture
+    def dem(self):
+        """Create synthetic DEM."""
+        return np.random.rand(100, 100).astype(np.float32) * 1000
+
+    def test_full_pipeline(self, dem):
+        """Test full correction pipeline."""
+        terrain_config = TerrainCorrectionConfig(
+            method=TerrainCorrectionMethod.COSINE,
+            sun_elevation_deg=45.0,
+        )
+        atmospheric_config = AtmosphericCorrectionConfig(
+            method=AtmosphericCorrectionMethod.DOS,
+        )
+
+        pipeline = CorrectionPipeline(
+            terrain_config=terrain_config,
+            atmospheric_config=atmospheric_config,
+        )
+
+        data = np.random.rand(100, 100).astype(np.float32) * 1000
+
+        result = pipeline.apply(
+            data=data,
+            sensor_type="optical",
+            dem=dem,
+        )
+
+        assert result.correction_type == "pipeline"
+        assert "atmospheric" in result.diagnostics["steps_applied"]
+        assert "terrain" in result.diagnostics["steps_applied"]
+
+
+class TestCorrectionConvenienceFunctions:
+    """Test correction convenience functions."""
+
+    def test_apply_terrain_correction(self):
+        """Test terrain correction convenience function."""
+        dem = np.random.rand(100, 100).astype(np.float32) * 1000
+        data = np.random.rand(100, 100).astype(np.float32) * 100
+
+        result = apply_terrain_correction(data, dem)
+
+        assert isinstance(result, CorrectionResult)
+
+    def test_apply_atmospheric_correction(self):
+        """Test atmospheric correction convenience function."""
+        data = np.random.rand(100, 100).astype(np.float32) * 1000
+
+        result = apply_atmospheric_correction(data)
+
+        assert isinstance(result, CorrectionResult)
+
+    def test_normalize_to_reference_function(self):
+        """Test normalization convenience function."""
+        data = np.random.rand(100, 100).astype(np.float32) * 100
+        reference = np.random.rand(100, 100).astype(np.float32) * 50
+
+        result = normalize_to_reference(data, reference)
+
+        assert isinstance(result, CorrectionResult)
+
+
+# ============================================================================
+# Conflict Resolution Tests
+# ============================================================================
+
+class TestConflictDetector:
+    """Test conflict detector."""
+
+    @pytest.fixture
+    def detector(self):
+        """Create conflict detector."""
+        thresholds = ConflictThresholds(
+            absolute_tolerance=0.1,
+            relative_tolerance=0.05,
+        )
+        return ConflictDetector(thresholds)
+
+    @pytest.fixture
+    def agreeing_layers(self):
+        """Create layers that agree."""
+        base_data = np.random.rand(50, 50).astype(np.float32)
+        return [
+            SourceLayer(data=base_data + np.random.randn(50, 50) * 0.01, source_id=f"src_{i}")
+            for i in range(3)
+        ]
+
+    @pytest.fixture
+    def disagreeing_layers(self):
+        """Create layers that disagree."""
+        return [
+            SourceLayer(data=np.full((50, 50), float(i) * 10), source_id=f"src_{i}")
+            for i in range(3)
+        ]
+
+    def test_detect_no_conflict(self, detector, agreeing_layers):
+        """Test detecting no conflict."""
+        conflict_map = detector.detect(agreeing_layers)
+
+        assert isinstance(conflict_map, ConflictMap)
+        # Most pixels should have no or low conflict
+        no_conflict = np.sum(conflict_map.severity_map == ConflictSeverity.NONE.value)
+        low_conflict = np.sum(conflict_map.severity_map == ConflictSeverity.LOW.value)
+        assert (no_conflict + low_conflict) > 0.5 * conflict_map.severity_map.size
+
+    def test_detect_high_conflict(self, detector, disagreeing_layers):
+        """Test detecting high conflict."""
+        conflict_map = detector.detect(disagreeing_layers)
+
+        # Should have high or critical conflict
+        high = np.sum(conflict_map.severity_map == ConflictSeverity.HIGH.value)
+        critical = np.sum(conflict_map.severity_map == ConflictSeverity.CRITICAL.value)
+        assert (high + critical) > 0
+
+    def test_single_layer_no_conflict(self, detector):
+        """Test that single layer has no conflict."""
+        layer = SourceLayer(data=np.random.rand(50, 50), source_id="single")
+        conflict_map = detector.detect([layer])
+
+        assert np.all(conflict_map.severity_map == ConflictSeverity.NONE.value)
+
+
+class TestConflictResolver:
+    """Test conflict resolver."""
+
+    @pytest.fixture
+    def resolver(self):
+        """Create conflict resolver."""
+        config = ConflictConfig(
+            strategy=ConflictResolutionStrategy.WEIGHTED_MEAN,
+        )
+        return ConflictResolver(config)
+
+    @pytest.fixture
+    def sample_layers(self):
+        """Create sample source layers."""
+        base = np.random.rand(50, 50).astype(np.float32)
+        return [
+            SourceLayer(
+                data=base + i * 0.1,
+                source_id=f"src_{i}",
+                confidence=0.8 - i * 0.1,
+            )
+            for i in range(3)
+        ]
+
+    def test_weighted_mean_resolution(self, resolver, sample_layers):
+        """Test weighted mean resolution."""
+        result = resolver.resolve(sample_layers)
+
+        assert isinstance(result, ConflictResolutionResult)
+        assert result.resolved_data.shape == sample_layers[0].data.shape
+        assert result.strategy_used == "weighted_mean"
+
+    def test_majority_vote_resolution(self, sample_layers):
+        """Test majority vote resolution."""
+        # Create discrete data
+        layers = [
+            SourceLayer(
+                data=np.full((50, 50), i % 2, dtype=np.int32),
+                source_id=f"src_{i}",
+            )
+            for i in range(5)
+        ]
+
+        config = ConflictConfig(strategy=ConflictResolutionStrategy.MAJORITY_VOTE)
+        resolver = ConflictResolver(config)
+
+        result = resolver.resolve(layers)
+
+        assert result.strategy_used == "majority_vote"
+
+    def test_median_resolution(self, sample_layers):
+        """Test median resolution."""
+        config = ConflictConfig(strategy=ConflictResolutionStrategy.MEDIAN)
+        resolver = ConflictResolver(config)
+
+        result = resolver.resolve(sample_layers)
+
+        assert result.strategy_used == "median"
+
+    def test_highest_confidence_resolution(self, sample_layers):
+        """Test highest confidence resolution."""
+        config = ConflictConfig(strategy=ConflictResolutionStrategy.HIGHEST_CONFIDENCE)
+        resolver = ConflictResolver(config)
+
+        result = resolver.resolve(sample_layers)
+
+        assert result.strategy_used == "highest_confidence"
+        assert result.provenance_map is not None
+
+    def test_priority_order_resolution(self, sample_layers):
+        """Test priority order resolution."""
+        config = ConflictConfig(
+            strategy=ConflictResolutionStrategy.PRIORITY_ORDER,
+            source_priorities=["src_2", "src_0", "src_1"],
+        )
+        resolver = ConflictResolver(config)
+
+        result = resolver.resolve(sample_layers)
+
+        assert result.strategy_used == "priority_order"
+
+    def test_single_layer_resolution(self, resolver):
+        """Test resolution with single layer."""
+        layer = SourceLayer(data=np.random.rand(50, 50), source_id="single")
+
+        result = resolver.resolve([layer])
+
+        assert result.strategy_used == "single_source"
+        assert np.array_equal(result.resolved_data, layer.data)
+
+    def test_empty_layers_error(self, resolver):
+        """Test error with empty layers."""
+        with pytest.raises(ValueError, match="No layers provided"):
+            resolver.resolve([])
+
+
+class TestConsensusBuilder:
+    """Test consensus builder."""
+
+    @pytest.fixture
+    def builder(self):
+        """Create consensus builder."""
+        primary = ConflictConfig(strategy=ConflictResolutionStrategy.WEIGHTED_MEAN)
+        secondary = ConflictConfig(strategy=ConflictResolutionStrategy.MEDIAN)
+        return ConsensusBuilder(primary, secondary)
+
+    @pytest.fixture
+    def sample_layers(self):
+        """Create sample source layers."""
+        return [
+            SourceLayer(
+                data=np.random.rand(50, 50).astype(np.float32),
+                source_id=f"src_{i}",
+                confidence=0.9 - i * 0.2,
+            )
+            for i in range(3)
+        ]
+
+    def test_build_consensus(self, builder, sample_layers):
+        """Test building consensus."""
+        result = builder.build_consensus(sample_layers)
+
+        assert isinstance(result, ConflictResolutionResult)
+        assert result.resolved_data.shape == sample_layers[0].data.shape
+
+
+class TestConflictConvenienceFunctions:
+    """Test conflict resolution convenience functions."""
+
+    def test_detect_conflicts_function(self):
+        """Test detect_conflicts convenience function."""
+        layers = [
+            SourceLayer(data=np.random.rand(50, 50), source_id=f"src_{i}")
+            for i in range(3)
+        ]
+
+        conflict_map = detect_conflicts(layers)
+
+        assert isinstance(conflict_map, ConflictMap)
+
+    def test_resolve_conflicts_function(self):
+        """Test resolve_conflicts convenience function."""
+        layers = [
+            SourceLayer(data=np.random.rand(50, 50), source_id=f"src_{i}")
+            for i in range(3)
+        ]
+
+        result = resolve_conflicts(layers, ConflictResolutionStrategy.MEAN)
+
+        assert isinstance(result, ConflictResolutionResult)
+
+    def test_build_consensus_function(self):
+        """Test build_consensus convenience function."""
+        arrays = [np.random.rand(50, 50).astype(np.float32) for _ in range(3)]
+
+        consensus = build_consensus(arrays)
+
+        assert consensus.shape == (50, 50)
+
+
+# ============================================================================
+# Uncertainty Tests
+# ============================================================================
+
+class TestUncertaintyComponent:
+    """Test uncertainty component dataclass."""
+
+    def test_basic_creation(self):
+        """Test creating an uncertainty component."""
+        component = UncertaintyComponent(
+            source=UncertaintySource.SENSOR,
+            value=0.1,
+        )
+
+        assert component.source == UncertaintySource.SENSOR
+        assert component.value == 0.1
+        assert component.uncertainty_type == UncertaintyType.STANDARD_DEVIATION
+
+    def test_to_variance(self):
+        """Test conversion to variance."""
+        component = UncertaintyComponent(
+            source=UncertaintySource.SENSOR,
+            value=0.1,
+            uncertainty_type=UncertaintyType.STANDARD_DEVIATION,
+        )
+
+        variance = component.to_variance()
+        assert abs(variance - 0.01) < 1e-10
+
+    def test_to_std(self):
+        """Test conversion to standard deviation."""
+        component = UncertaintyComponent(
+            source=UncertaintySource.SENSOR,
+            value=0.01,
+            uncertainty_type=UncertaintyType.VARIANCE,
+        )
+
+        std = component.to_std()
+        assert abs(std - 0.1) < 1e-10
+
+
+class TestUncertaintyBudget:
+    """Test uncertainty budget dataclass."""
+
+    def test_automatic_total_calculation(self):
+        """Test automatic total calculation."""
+        components = [
+            UncertaintyComponent(source=UncertaintySource.SENSOR, value=0.1),
+            UncertaintyComponent(source=UncertaintySource.ALGORITHM, value=0.2),
+        ]
+
+        budget = UncertaintyBudget(components=components)
+
+        # RSS: sqrt(0.1^2 + 0.2^2) = sqrt(0.01 + 0.04) = sqrt(0.05) ≈ 0.224
+        expected = np.sqrt(0.01 + 0.04)
+        assert abs(budget.total_uncertainty - expected) < 1e-6
+
+    def test_dominant_source_detection(self):
+        """Test dominant source detection."""
+        components = [
+            UncertaintyComponent(source=UncertaintySource.SENSOR, value=0.1),
+            UncertaintyComponent(source=UncertaintySource.ALGORITHM, value=0.3),
+        ]
+
+        budget = UncertaintyBudget(components=components)
+
+        assert budget.dominant_source == UncertaintySource.ALGORITHM
+
+
+class TestUncertaintyMap:
+    """Test uncertainty map dataclass."""
+
+    def test_to_confidence_interval(self):
+        """Test confidence interval calculation."""
+        uncertainty = np.full((10, 10), 0.1, dtype=np.float32)
+        data = np.full((10, 10), 1.0, dtype=np.float32)
+
+        unc_map = UncertaintyMap(uncertainty=uncertainty)
+        lower, upper = unc_map.to_confidence_interval(data, confidence=0.95)
+
+        # 95% CI should be approximately ±1.96 sigma
+        assert lower.mean() < data.mean()
+        assert upper.mean() > data.mean()
+
+    def test_to_relative(self):
+        """Test relative uncertainty calculation."""
+        uncertainty = np.full((10, 10), 0.1, dtype=np.float32)
+        data = np.full((10, 10), 1.0, dtype=np.float32)
+
+        unc_map = UncertaintyMap(uncertainty=uncertainty)
+        relative = unc_map.to_relative(data)
+
+        # 0.1 / 1.0 = 10%
+        assert abs(relative.mean() - 10.0) < 1e-6
+
+
+class TestUncertaintyPropagator:
+    """Test uncertainty propagator."""
+
+    @pytest.fixture
+    def propagator(self):
+        """Create uncertainty propagator."""
+        return UncertaintyPropagator()
+
+    def test_propagate_addition(self, propagator):
+        """Test uncertainty propagation through addition."""
+        a = np.array([1.0, 2.0, 3.0])
+        sigma_a = np.array([0.1, 0.1, 0.1])
+        b = np.array([2.0, 3.0, 4.0])
+        sigma_b = np.array([0.2, 0.2, 0.2])
+
+        result, uncertainty = propagator.propagate_addition(a, sigma_a, b, sigma_b)
+
+        # c = a + b
+        assert np.allclose(result, a + b)
+        # sigma_c = sqrt(sigma_a^2 + sigma_b^2) = sqrt(0.01 + 0.04) ≈ 0.224
+        expected_sigma = np.sqrt(0.01 + 0.04)
+        assert np.allclose(uncertainty, expected_sigma, rtol=0.01)
+
+    def test_propagate_multiplication(self, propagator):
+        """Test uncertainty propagation through multiplication."""
+        a = np.array([10.0, 20.0, 30.0])
+        sigma_a = np.array([1.0, 1.0, 1.0])  # 10% relative
+        b = np.array([2.0, 2.0, 2.0])
+        sigma_b = np.array([0.2, 0.2, 0.2])  # 10% relative
+
+        result, uncertainty = propagator.propagate_multiplication(a, sigma_a, b, sigma_b)
+
+        assert np.allclose(result, a * b)
+
+    def test_propagate_division(self, propagator):
+        """Test uncertainty propagation through division."""
+        a = np.array([10.0, 20.0, 30.0])
+        sigma_a = np.array([1.0, 1.0, 1.0])
+        b = np.array([2.0, 2.0, 2.0])
+        sigma_b = np.array([0.2, 0.2, 0.2])
+
+        result, uncertainty = propagator.propagate_division(a, sigma_a, b, sigma_b)
+
+        assert np.allclose(result, a / b)
+
+    def test_propagate_power(self, propagator):
+        """Test uncertainty propagation through power."""
+        a = np.array([2.0, 3.0, 4.0])
+        sigma_a = np.array([0.1, 0.1, 0.1])
+        n = 2.0
+
+        result, uncertainty = propagator.propagate_power(a, sigma_a, n)
+
+        assert np.allclose(result, a ** n)
+
+    def test_propagate_weighted_average(self, propagator):
+        """Test uncertainty propagation through weighted average."""
+        data_list = [
+            np.array([1.0, 2.0, 3.0]),
+            np.array([1.1, 2.1, 3.1]),
+            np.array([0.9, 1.9, 2.9]),
+        ]
+        unc_list = [
+            np.array([0.1, 0.1, 0.1]),
+            np.array([0.2, 0.2, 0.2]),
+            np.array([0.15, 0.15, 0.15]),
+        ]
+
+        result, uncertainty = propagator.propagate_weighted_average(data_list, unc_list)
+
+        # Should be close to average
+        expected = np.mean(data_list, axis=0)
+        assert np.allclose(result, expected)
+
+
+class TestUncertaintyCombiner:
+    """Test uncertainty combiner."""
+
+    @pytest.fixture
+    def combiner(self):
+        """Create uncertainty combiner."""
+        return UncertaintyCombiner()
+
+    def test_combine_uncorrelated(self, combiner):
+        """Test combining uncorrelated components."""
+        components = [
+            UncertaintyComponent(source=UncertaintySource.SENSOR, value=0.1),
+            UncertaintyComponent(source=UncertaintySource.ALGORITHM, value=0.2),
+            UncertaintyComponent(source=UncertaintySource.FUSION, value=0.1),
+        ]
+
+        combined = combiner.combine_uncorrelated(components)
+
+        # RSS: sqrt(0.01 + 0.04 + 0.01) = sqrt(0.06) ≈ 0.245
+        expected = np.sqrt(0.06)
+        assert abs(combined.value - expected) < 1e-6
+
+    def test_combine_correlated(self, combiner):
+        """Test combining correlated components."""
+        components = [
+            UncertaintyComponent(source=UncertaintySource.SENSOR, value=0.1),
+            UncertaintyComponent(source=UncertaintySource.ALGORITHM, value=0.2),
+        ]
+        correlation = np.array([[1.0, 0.5], [0.5, 1.0]])
+
+        combined = combiner.combine_correlated(components, correlation)
+
+        # With positive correlation, result should be > RSS
+        rss = np.sqrt(0.01 + 0.04)
+        assert combined.value > rss * 0.9  # Correlation adds variance
+
+
+class TestFusionUncertaintyEstimator:
+    """Test fusion uncertainty estimator."""
+
+    @pytest.fixture
+    def estimator(self):
+        """Create fusion uncertainty estimator."""
+        return FusionUncertaintyEstimator()
+
+    def test_estimate_from_disagreement(self, estimator):
+        """Test uncertainty from sensor disagreement."""
+        data_list = [
+            np.random.rand(50, 50).astype(np.float32),
+            np.random.rand(50, 50).astype(np.float32),
+            np.random.rand(50, 50).astype(np.float32),
+        ]
+
+        unc_map = estimator.estimate_from_disagreement(data_list)
+
+        assert isinstance(unc_map, UncertaintyMap)
+        assert unc_map.uncertainty.shape == (50, 50)
+
+    def test_estimate_from_single_source(self, estimator):
+        """Test uncertainty from single source."""
+        data_list = [np.random.rand(50, 50).astype(np.float32)]
+
+        unc_map = estimator.estimate_from_disagreement(data_list)
+
+        # Should return minimum uncertainty
+        assert unc_map.metadata["source"] == "single_source_minimum"
+
+    def test_estimate_interpolation_uncertainty(self, estimator):
+        """Test interpolation uncertainty estimation."""
+        before = np.full((50, 50), 1.0, dtype=np.float32)
+        after = np.full((50, 50), 2.0, dtype=np.float32)
+
+        unc_map = estimator.estimate_interpolation_uncertainty(
+            before, after, time_fraction=0.5
+        )
+
+        assert unc_map.metadata["source"] == "temporal_interpolation"
+
+    def test_estimate_alignment_uncertainty(self, estimator):
+        """Test alignment uncertainty estimation."""
+        gradient = np.random.rand(50, 50).astype(np.float32) * 10
+
+        unc_map = estimator.estimate_alignment_uncertainty(
+            offset_pixels=0.5,
+            gradient_magnitude=gradient,
+        )
+
+        assert unc_map.metadata["source"] == "spatial_alignment"
+
+    def test_combine_fusion_uncertainties(self, estimator):
+        """Test combining all fusion uncertainties."""
+        sensor_unc = UncertaintyMap(
+            uncertainty=np.full((50, 50), 0.1, dtype=np.float32),
+        )
+        disagreement_unc = UncertaintyMap(
+            uncertainty=np.full((50, 50), 0.05, dtype=np.float32),
+        )
+
+        combined = estimator.combine_fusion_uncertainties(
+            sensor_unc, disagreement_unc
+        )
+
+        assert combined.budget is not None
+        assert len(combined.budget.components) >= 2
+
+
+class TestUncertaintyConvenienceFunctions:
+    """Test uncertainty convenience functions."""
+
+    def test_estimate_uncertainty_from_samples_function(self):
+        """Test estimate_uncertainty_from_samples convenience function."""
+        samples = [np.random.rand(50, 50) for _ in range(5)]
+
+        unc_map = estimate_uncertainty_from_samples(samples)
+
+        assert isinstance(unc_map, UncertaintyMap)
+
+    def test_propagate_through_operation_function(self):
+        """Test propagate_through_operation convenience function."""
+        data = np.array([1.0, 2.0, 3.0])
+        uncertainty = np.array([0.1, 0.1, 0.1])
+
+        result, unc = propagate_through_operation(
+            data, uncertainty, "add", np.array([1.0, 1.0, 1.0])
+        )
+
+        assert np.allclose(result, data + 1.0)
+
+    def test_combine_uncertainties_function(self):
+        """Test combine_uncertainties convenience function."""
+        uncertainties = [
+            np.array([0.1, 0.2, 0.3]),
+            np.array([0.2, 0.1, 0.2]),
+        ]
+
+        combined = combine_uncertainties(uncertainties, method="rss")
+
+        # RSS
+        expected = np.sqrt(uncertainties[0]**2 + uncertainties[1]**2)
+        assert np.allclose(combined, expected)
+
+    def test_combine_uncertainties_max_method(self):
+        """Test max combination method."""
+        uncertainties = [
+            np.array([0.1, 0.3, 0.2]),
+            np.array([0.2, 0.1, 0.3]),
+        ]
+
+        combined = combine_uncertainties(uncertainties, method="max")
+
+        expected = np.array([0.2, 0.3, 0.3])
+        assert np.allclose(combined, expected)
+
+
+# ============================================================================
+# Edge Case Tests
+# ============================================================================
+
+class TestFusionCoreEdgeCases:
+    """Test edge cases for fusion core modules."""
+
+    def test_alignment_empty_input(self):
+        """Test alignment with empty input."""
+        aligner = TemporalAligner()
+        result = aligner.align_to_timestamps([], [datetime.now(timezone.utc)])
+        assert result == []
+
+    def test_conflict_resolution_with_nan(self):
+        """Test conflict resolution handles NaN values."""
+        layers = [
+            SourceLayer(
+                data=np.array([[1.0, np.nan], [2.0, 3.0]]),
+                source_id="src_0"
+            ),
+            SourceLayer(
+                data=np.array([[1.1, 2.0], [np.nan, 3.1]]),
+                source_id="src_1"
+            ),
+        ]
+
+        result = resolve_conflicts(layers, ConflictResolutionStrategy.MEAN)
+
+        # Should handle NaN gracefully
+        assert isinstance(result, ConflictResolutionResult)
+
+    def test_uncertainty_zero_values(self):
+        """Test uncertainty propagation with zero values."""
+        propagator = UncertaintyPropagator()
+
+        data = np.array([0.0, 1.0, 2.0])
+        uncertainty = np.array([0.1, 0.1, 0.1])
+        divisor = np.array([0.0, 1.0, 2.0])  # Contains zero
+        div_unc = np.array([0.1, 0.1, 0.1])
+
+        result, unc = propagator.propagate_division(data, uncertainty, divisor, div_unc)
+
+        # Division by zero should produce NaN
+        assert np.isnan(result[0])
+        assert np.isnan(unc[0])
+
+    def test_terrain_correction_flat_dem(self):
+        """Test terrain correction with flat DEM."""
+        flat_dem = np.full((100, 100), 1000.0, dtype=np.float32)
+        config = TerrainCorrectionConfig(
+            method=TerrainCorrectionMethod.COSINE,
+            dem=flat_dem,
+            dem_resolution=30.0,
+        )
+        corrector = TerrainCorrector(config)
+
+        data = np.random.rand(100, 100).astype(np.float32) * 100
+        result = corrector.correct(data)
+
+        # Flat terrain should have minimal correction
+        assert isinstance(result, CorrectionResult)
+
+    def test_normalization_constant_data(self):
+        """Test normalization with constant data."""
+        constant = np.full((50, 50), 100.0, dtype=np.float32)
+        reference = np.full((50, 50), 50.0, dtype=np.float32)
+
+        config = NormalizationConfig(method=NormalizationMethod.RELATIVE)
+        normalizer = RadiometricNormalizer(config)
+        normalizer.set_reference(reference)
+
+        result = normalizer.normalize(constant)
+
+        # Should handle constant data gracefully
+        assert isinstance(result, CorrectionResult)
