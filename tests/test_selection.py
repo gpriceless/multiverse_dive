@@ -1457,6 +1457,58 @@ class TestAtmosphericEdgeCases:
             assert "priority" in rec
             assert "rationale" in rec
 
+    def test_nan_cloud_cover_handling(self):
+        """Test handling of NaN cloud cover value (Track 8 edge case)."""
+        import math
+        evaluator = AtmosphericEvaluator()
+
+        # NaN cloud cover - should not crash, treat as unknown (None-like)
+        assessment = evaluator.assess(cloud_cover_percent=float('nan'))
+
+        # NaN comparisons are always False, so should fall through conditions
+        # The behavior is that all threshold checks return False for NaN
+        # This means it won't trigger any cloud-based rejection
+        assert assessment is not None  # No crash
+        assert assessment.sar_suitable is True  # SAR is always suitable
+
+    def test_inf_cloud_cover_handling(self):
+        """Test handling of infinity cloud cover value (Track 8 edge case)."""
+        evaluator = AtmosphericEvaluator()
+
+        # Positive infinity - should treat as fully cloudy (degraded)
+        assessment = evaluator.assess(cloud_cover_percent=float('inf'))
+
+        assert assessment is not None  # No crash
+        assert assessment.condition == AtmosphericCondition.DEGRADED
+        assert assessment.optical_suitable is False
+        assert assessment.degraded_mode is True
+
+    def test_negative_inf_cloud_cover_handling(self):
+        """Test handling of negative infinity cloud cover (Track 8 edge case)."""
+        evaluator = AtmosphericEvaluator()
+
+        # Negative infinity - should treat as no clouds (excellent)
+        assessment = evaluator.assess(cloud_cover_percent=float('-inf'))
+
+        assert assessment is not None  # No crash
+        assert assessment.condition == AtmosphericCondition.EXCELLENT
+        assert assessment.optical_suitable is True
+
+    def test_nan_visibility_handling(self):
+        """Test handling of NaN visibility value (Track 8 edge case)."""
+        evaluator = AtmosphericEvaluator()
+
+        # NaN visibility should not cause crash
+        assessment = evaluator.assess(
+            cloud_cover_percent=5.0,
+            visibility_km=float('nan')
+        )
+
+        assert assessment is not None  # No crash
+        # NaN comparison returns False, so visibility check is bypassed
+        # Optical suitable depends on cloud cover (which is good at 5%)
+        assert assessment.optical_suitable is True
+
 
 # ============================================================================
 # DETERMINISTIC SELECTION TESTS (Track 7)

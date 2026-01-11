@@ -408,12 +408,13 @@ Your analytical arsenal is ready! These baseline algorithms are battle-tested wo
    - 25 comprehensive tests covering edge cases and determinism
    - Full integration with AlgorithmRegistry and DataAvailability
 
-8. **Track 8: Selection Tests**
-   - `tests/test_selection.py`
-   - Test constraint evaluation
-   - Test ranking with various weights
-   - Test atmospheric-aware selection
-   - Test algorithm selection determinism
+8. **Track 8: Selection Tests** ✅ **[DONE]**
+   - `tests/test_selection.py` (209 tests, all passing)
+   - Test constraint evaluation (TestSelectionConstraints, 8 tests)
+   - Test ranking with various weights (TestAlgorithmSelectorScoringTrack6, 5 tests)
+   - Test atmospheric-aware selection (TestAtmosphericEvaluator/EdgeCases, 38 tests)
+   - Test algorithm selection determinism (TestDeterministicSelector/EdgeCases, 30 tests)
+   - Additional edge cases: NaN/Inf handling for cloud cover and visibility
 
 **Deliverables:**
 - Constraint evaluation engine
