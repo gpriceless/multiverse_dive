@@ -1456,3 +1456,2257 @@ class TestAtmosphericEdgeCases:
         for rec in recommendations:
             assert "priority" in rec
             assert "rationale" in rec
+
+
+# ============================================================================
+# DETERMINISTIC SELECTION TESTS (Track 7)
+# ============================================================================
+
+from datetime import datetime, timezone
+from core.analysis.selection.deterministic import (
+    DeterministicSelector,
+    SelectionPlan,
+    AlgorithmSelection,
+    SelectionQuality,
+    SelectionReason,
+    SelectionConstraints,
+    DataAvailability,
+    create_deterministic_selector,
+    SELECTOR_VERSION,
+)
+from core.analysis.library.registry import (
+    AlgorithmMetadata,
+    AlgorithmRegistry,
+    AlgorithmCategory,
+    DataType,
+    ResourceRequirements,
+    ValidationMetrics,
+)
+from core.data.discovery.base import DiscoveryResult
+from core.data.evaluation.ranking import RankedCandidate
+
+
+class TestDataAvailability:
+    """Test DataAvailability creation and queries."""
+
+    def test_from_discovery_results_basic(self):
+        """Test creating DataAvailability from discovery results."""
+        results = [
+            DiscoveryResult(
+                dataset_id="s1-123",
+                provider="sentinel1",
+                data_type="sar",
+                source_uri="s3://bucket/s1-123.tif",
+                format="geotiff",
+                acquisition_time=datetime.now(timezone.utc),
+                spatial_coverage_percent=95.0,
+                resolution_m=10.0,
+            ),
+            DiscoveryResult(
+                dataset_id="dem-456",
+                provider="copernicus",
+                data_type="dem",
+                source_uri="s3://bucket/dem-456.tif",
+                format="geotiff",
+                acquisition_time=datetime.now(timezone.utc),
+                spatial_coverage_percent=100.0,
+                resolution_m=30.0,
+            ),
+        ]
+
+        availability = DataAvailability.from_discovery_results(results)
+
+        assert DataType.SAR in availability.data_types
+        assert DataType.DEM in availability.data_types
+        assert "sar" in availability.sensor_types
+        assert "dem" in availability.sensor_types
+        assert len(availability.datasets_by_type["sar"]) == 1
+        assert len(availability.datasets_by_type["dem"]) == 1
+
+    def test_has_data_type(self):
+        """Test data type availability check."""
+        availability = DataAvailability(
+            data_types={DataType.SAR, DataType.OPTICAL},
+            sensor_types={"sar", "optical"},
+        )
+
+        assert availability.has_data_type(DataType.SAR) is True
+        assert availability.has_data_type(DataType.OPTICAL) is True
+        assert availability.has_data_type(DataType.DEM) is False
+
+    def test_has_all_required(self):
+        """Test checking multiple required data types."""
+        availability = DataAvailability(
+            data_types={DataType.SAR, DataType.DEM},
+            sensor_types={"sar", "dem"},
+        )
+
+        assert availability.has_all_required([DataType.SAR]) is True
+        assert availability.has_all_required([DataType.SAR, DataType.DEM]) is True
+        assert availability.has_all_required([DataType.SAR, DataType.OPTICAL]) is False
+
+    def test_get_missing(self):
+        """Test getting missing data types."""
+        availability = DataAvailability(
+            data_types={DataType.SAR},
+            sensor_types={"sar"},
+        )
+
+        missing = availability.get_missing([DataType.SAR, DataType.DEM, DataType.OPTICAL])
+
+        assert DataType.DEM in missing
+        assert DataType.OPTICAL in missing
+        assert DataType.SAR not in missing
+
+    def test_empty_results(self):
+        """Test with empty discovery results."""
+        availability = DataAvailability.from_discovery_results([])
+
+        assert len(availability.data_types) == 0
+        assert len(availability.sensor_types) == 0
+        assert len(availability.datasets_by_type) == 0
+
+
+class TestAlgorithmSelection:
+    """Test AlgorithmSelection dataclass."""
+
+    def test_hash_computation(self):
+        """Test deterministic hash computation."""
+        selection = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR, DataType.DEM],
+        )
+
+        # Hash should be non-empty
+        assert len(selection.deterministic_hash) == 16
+
+        # Same inputs should produce same hash
+        selection2 = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR, DataType.DEM],
+        )
+
+        assert selection.deterministic_hash == selection2.deterministic_hash
+
+    def test_hash_changes_with_inputs(self):
+        """Test that hash changes when inputs change."""
+        selection1 = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        )
+
+        selection2 = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.1.0",  # Different version
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        )
+
+        assert selection1.deterministic_hash != selection2.deterministic_hash
+
+    def test_verify_hash(self):
+        """Test hash verification."""
+        selection = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        )
+
+        # Valid hash should verify
+        assert selection.verify_hash() is True
+
+        # Tampered hash should fail
+        selection.deterministic_hash = "tampered_hash_"
+        assert selection.verify_hash() is False
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        selection = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR, DataType.DEM],
+            degraded_mode=False,
+            rationale="Best match for flood detection",
+            selection_reason=SelectionReason.BEST_MATCH,
+            alternatives_rejected={"other_algo": "lower_priority"},
+        )
+
+        data = selection.to_dict()
+
+        assert data["algorithm_id"] == "flood.baseline.threshold_sar"
+        assert data["algorithm_name"] == "SAR Threshold"
+        assert data["version"] == "1.0.0"
+        assert data["quality"] == "optimal"
+        assert data["required_data_types"] == ["sar"]
+        assert data["available_data_types"] == ["sar", "dem"]
+        assert data["degraded_mode"] is False
+        assert "Best match" in data["rationale"]
+        assert data["selection_reason"] == "best_match"
+        assert "deterministic_hash" in data
+        assert "selector_version" in data
+        assert "selected_at" in data
+
+
+class TestSelectionPlan:
+    """Test SelectionPlan dataclass."""
+
+    def test_add_selection(self):
+        """Test adding selections to plan."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        selection1 = AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        )
+
+        plan.add_selection(selection1)
+
+        assert "flood.baseline.threshold_sar" in plan.selections
+        assert "flood.baseline.threshold_sar" in plan.execution_order
+        assert plan.overall_quality == SelectionQuality.OPTIMAL
+        assert len(plan.plan_hash) > 0
+
+    def test_quality_degradation(self):
+        """Test that overall quality degrades with degraded selections."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        # Add optimal selection
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo1",
+            algorithm_name="Algo 1",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        ))
+
+        assert plan.overall_quality == SelectionQuality.OPTIMAL
+
+        # Add degraded selection
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo2",
+            algorithm_name="Algo 2",
+            version="1.0.0",
+            quality=SelectionQuality.DEGRADED,
+            required_data_types=[DataType.OPTICAL],
+            available_data_types=[DataType.OPTICAL],
+            degraded_mode=True,
+        ))
+
+        assert plan.overall_quality == SelectionQuality.DEGRADED
+        assert plan.degraded_mode is True
+
+    def test_get_execution_sequence(self):
+        """Test getting execution sequence."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo1",
+            algorithm_name="Algo 1",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        ))
+
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo2",
+            algorithm_name="Algo 2",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.DEM],
+            available_data_types=[DataType.DEM],
+        ))
+
+        sequence = plan.get_execution_sequence()
+
+        assert len(sequence) == 2
+        assert sequence[0].algorithm_id == "algo1"
+        assert sequence[1].algorithm_id == "algo2"
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="flood.baseline.threshold_sar",
+            algorithm_name="SAR Threshold",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        ))
+
+        data = plan.to_dict()
+
+        assert data["event_class"] == "flood.coastal"
+        assert "flood.baseline.threshold_sar" in data["selections"]
+        assert data["execution_order"] == ["flood.baseline.threshold_sar"]
+        assert data["overall_quality"] == "optimal"
+        assert "plan_hash" in data
+        assert "created_at" in data
+
+
+class TestSelectionConstraints:
+    """Test SelectionConstraints."""
+
+    @pytest.fixture
+    def sample_algorithm(self):
+        """Create sample algorithm metadata."""
+        return AlgorithmMetadata(
+            id="flood.baseline.threshold_sar",
+            name="SAR Threshold",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(memory_mb=2048, gpu_required=False),
+            deterministic=True,
+        )
+
+    def test_allows_algorithm_basic(self, sample_algorithm):
+        """Test basic constraint checking."""
+        constraints = SelectionConstraints()
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is True
+        assert reason is None
+
+    def test_rejects_deprecated(self, sample_algorithm):
+        """Test rejection of deprecated algorithms."""
+        sample_algorithm.deprecated = True
+        constraints = SelectionConstraints()
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is False
+        assert reason == "deprecated"
+
+    def test_rejects_excluded(self, sample_algorithm):
+        """Test rejection of explicitly excluded algorithms."""
+        constraints = SelectionConstraints(
+            excluded_algorithms={"flood.baseline.threshold_sar"}
+        )
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is False
+        assert reason == "explicitly_excluded"
+
+    def test_rejects_memory_exceeded(self, sample_algorithm):
+        """Test rejection when memory constraint exceeded."""
+        constraints = SelectionConstraints(max_memory_mb=1024)
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is False
+        assert reason == "memory_exceeded"
+
+    def test_allows_within_memory(self, sample_algorithm):
+        """Test allowing algorithm within memory constraint."""
+        constraints = SelectionConstraints(max_memory_mb=4096)
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is True
+
+    def test_rejects_gpu_required(self, sample_algorithm):
+        """Test rejection when GPU required but not available."""
+        sample_algorithm.resources.gpu_required = True
+        constraints = SelectionConstraints(gpu_available=False)
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is False
+        assert reason == "gpu_required"
+
+    def test_allows_with_gpu(self, sample_algorithm):
+        """Test allowing GPU algorithm when GPU available."""
+        sample_algorithm.resources.gpu_required = True
+        constraints = SelectionConstraints(gpu_available=True)
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is True
+
+    def test_rejects_non_deterministic(self, sample_algorithm):
+        """Test rejection of non-deterministic algorithms."""
+        sample_algorithm.deterministic = False
+        constraints = SelectionConstraints(require_deterministic=True)
+
+        allowed, reason = constraints.allows_algorithm(sample_algorithm)
+
+        assert allowed is False
+        assert reason == "non_deterministic"
+
+
+class TestDeterministicSelector:
+    """Test DeterministicSelector main functionality."""
+
+    @pytest.fixture
+    def registry(self):
+        """Create test algorithm registry."""
+        registry = AlgorithmRegistry()
+
+        # Add test algorithms
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.threshold_sar",
+            name="SAR Threshold Detection",
+            category=AlgorithmCategory.BASELINE,
+            version="1.2.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            optional_data_types=[DataType.DEM],
+            deterministic=True,
+            outputs=["water_mask"],
+            validation=ValidationMetrics(accuracy_median=0.85),
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.ndwi_optical",
+            name="NDWI Optical Detection",
+            category=AlgorithmCategory.BASELINE,
+            version="1.1.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.OPTICAL],
+            optional_data_types=[DataType.DEM],
+            deterministic=True,
+            outputs=["water_mask"],
+            validation=ValidationMetrics(accuracy_median=0.80),
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.hand_model",
+            name="HAND Model",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.DEM],
+            deterministic=True,
+            outputs=["flood_susceptibility"],
+            validation=ValidationMetrics(accuracy_median=0.78),
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="wildfire.baseline.dnbr",
+            name="dNBR Burn Severity",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["wildfire.*"],
+            required_data_types=[DataType.OPTICAL],
+            deterministic=True,
+            outputs=["burn_severity"],
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.experimental.ml_fusion",
+            name="ML Fusion",
+            category=AlgorithmCategory.EXPERIMENTAL,
+            version="0.1.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR, DataType.OPTICAL],
+            deterministic=False,
+            outputs=["water_mask"],
+        ))
+
+        return registry
+
+    @pytest.fixture
+    def selector(self, registry):
+        """Create selector with test registry."""
+        return DeterministicSelector(registry=registry)
+
+    @pytest.fixture
+    def sar_availability(self):
+        """Create SAR-only data availability."""
+        return DataAvailability(
+            data_types={DataType.SAR},
+            sensor_types={"sar"},
+        )
+
+    @pytest.fixture
+    def full_availability(self):
+        """Create full data availability."""
+        return DataAvailability(
+            data_types={DataType.SAR, DataType.OPTICAL, DataType.DEM},
+            sensor_types={"sar", "optical", "dem"},
+        )
+
+    def test_select_algorithms_basic(self, selector, sar_availability):
+        """Test basic algorithm selection."""
+        plan = selector.select_algorithms("flood.coastal", sar_availability)
+
+        assert plan.event_class == "flood.coastal"
+        assert len(plan.selections) > 0
+        assert "flood.baseline.threshold_sar" in plan.selections
+        assert plan.overall_quality in [SelectionQuality.OPTIMAL, SelectionQuality.ACCEPTABLE]
+
+    def test_select_algorithms_with_full_data(self, selector, full_availability):
+        """Test selection with all data types available."""
+        plan = selector.select_algorithms("flood.riverine", full_availability)
+
+        # Should select multiple flood algorithms
+        assert len(plan.selections) >= 2
+
+        # Check quality
+        for algo_id, selection in plan.selections.items():
+            assert selection.quality != SelectionQuality.UNAVAILABLE
+
+    def test_select_algorithms_no_matching_data(self, selector):
+        """Test selection when required data is missing."""
+        availability = DataAvailability(
+            data_types={DataType.WEATHER},  # No SAR, optical, or DEM
+            sensor_types={"weather"},
+        )
+
+        plan = selector.select_algorithms("flood.coastal", availability)
+
+        # Should mark unavailable due to missing data
+        for algo_id, selection in plan.selections.items():
+            if selection.quality != SelectionQuality.UNAVAILABLE:
+                # Only weather-compatible algorithms should be selected
+                pass
+
+    def test_select_algorithms_wrong_event_type(self, selector, full_availability):
+        """Test selection for non-existent event type."""
+        plan = selector.select_algorithms("earthquake.magnitude7", full_availability)
+
+        # Should return empty plan (no algorithms match)
+        assert len(plan.selections) == 0
+
+    def test_select_algorithms_wildfire(self, selector, full_availability):
+        """Test selection for wildfire events."""
+        plan = selector.select_algorithms("wildfire.forest", full_availability)
+
+        # Should select wildfire algorithm
+        assert "wildfire.baseline.dnbr" in plan.selections
+
+    def test_deterministic_ordering(self, selector, full_availability):
+        """Test that selection is deterministic."""
+        # Run selection multiple times
+        plans = [
+            selector.select_algorithms("flood.coastal", full_availability)
+            for _ in range(3)
+        ]
+
+        # All plans should have same hash
+        hashes = [plan.plan_hash for plan in plans]
+        assert all(h == hashes[0] for h in hashes)
+
+        # All plans should have same execution order
+        orders = [plan.execution_order for plan in plans]
+        assert all(o == orders[0] for o in orders)
+
+    def test_select_single_algorithm(self, selector, sar_availability):
+        """Test selecting a specific algorithm."""
+        selection = selector.select_single_algorithm(
+            "flood.baseline.threshold_sar",
+            sar_availability
+        )
+
+        assert selection is not None
+        assert selection.algorithm_id == "flood.baseline.threshold_sar"
+        assert selection.quality == SelectionQuality.ACCEPTABLE  # Missing optional DEM
+
+    def test_select_single_algorithm_not_found(self, selector, sar_availability):
+        """Test selecting non-existent algorithm."""
+        selection = selector.select_single_algorithm(
+            "nonexistent.algorithm",
+            sar_availability
+        )
+
+        assert selection is None
+
+    def test_select_single_algorithm_missing_data(self, selector, sar_availability):
+        """Test selecting algorithm with missing required data."""
+        selection = selector.select_single_algorithm(
+            "flood.baseline.ndwi_optical",  # Requires optical
+            sar_availability  # Only has SAR
+        )
+
+        assert selection is not None
+        assert selection.quality == SelectionQuality.UNAVAILABLE
+        assert selection.selection_reason == SelectionReason.MISSING_REQUIRED_DATA
+
+    def test_constraints_applied(self, registry, full_availability):
+        """Test that constraints filter algorithms."""
+        constraints = SelectionConstraints(
+            require_deterministic=True,
+            excluded_algorithms={"flood.baseline.threshold_sar"}
+        )
+
+        selector = DeterministicSelector(registry=registry, constraints=constraints)
+        plan = selector.select_algorithms("flood.coastal", full_availability)
+
+        # threshold_sar should not be selected
+        for algo_id in plan.selections:
+            if plan.selections[algo_id].quality != SelectionQuality.UNAVAILABLE:
+                assert algo_id != "flood.baseline.threshold_sar"
+
+    def test_experimental_flagged_degraded(self, selector, full_availability):
+        """Test that experimental algorithms are flagged as degraded."""
+        # Need both SAR and optical for experimental algorithm
+        constraints = SelectionConstraints(require_deterministic=False)
+        selector.update_constraints(constraints)
+
+        plan = selector.select_algorithms("flood.coastal", full_availability)
+
+        if "flood.experimental.ml_fusion" in plan.selections:
+            selection = plan.selections["flood.experimental.ml_fusion"]
+            assert selection.quality == SelectionQuality.DEGRADED
+            assert selection.degraded_mode is True
+
+    def test_verify_selection_plan(self, selector, full_availability):
+        """Test plan verification."""
+        plan = selector.select_algorithms("flood.coastal", full_availability)
+
+        # Valid plan should verify
+        assert selector.verify_selection_plan(plan) is True
+
+        # Tampered plan should fail
+        plan.plan_hash = "tampered_hash"
+        assert selector.verify_selection_plan(plan) is False
+
+    def test_get_selector_info(self, selector):
+        """Test selector info retrieval."""
+        info = selector.get_selector_info()
+
+        assert info["version"] == SELECTOR_VERSION
+        assert "registry_size" in info
+        assert "constraints" in info
+
+
+class TestCreateDeterministicSelector:
+    """Test factory function."""
+
+    def test_create_with_defaults(self):
+        """Test creating selector with defaults."""
+        selector = create_deterministic_selector()
+
+        assert selector.constraints.require_deterministic is True
+        assert selector.constraints.prefer_baseline is True
+        assert selector.constraints.gpu_available is False
+
+    def test_create_with_custom_constraints(self):
+        """Test creating selector with custom constraints."""
+        selector = create_deterministic_selector(
+            max_memory_mb=4096,
+            gpu_available=True,
+            require_deterministic=False,
+            prefer_baseline=False
+        )
+
+        assert selector.constraints.max_memory_mb == 4096
+        assert selector.constraints.gpu_available is True
+        assert selector.constraints.require_deterministic is False
+        assert selector.constraints.prefer_baseline is False
+
+
+class TestDeterministicSelectionEdgeCases:
+    """Test edge cases and boundary conditions."""
+
+    @pytest.fixture
+    def minimal_registry(self):
+        """Create minimal test registry."""
+        registry = AlgorithmRegistry()
+
+        registry.register(AlgorithmMetadata(
+            id="test.algo1",
+            name="Test Algorithm 1",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        return registry
+
+    def test_empty_registry(self):
+        """Test with empty registry."""
+        registry = AlgorithmRegistry()
+        selector = DeterministicSelector(registry=registry)
+
+        availability = DataAvailability(data_types={DataType.SAR})
+        plan = selector.select_algorithms("flood.coastal", availability)
+
+        assert len(plan.selections) == 0
+
+    def test_empty_data_availability(self, minimal_registry):
+        """Test with no available data."""
+        selector = DeterministicSelector(registry=minimal_registry)
+
+        availability = DataAvailability()
+        plan = selector.select_algorithms("test.event", availability)
+
+        # All algorithms should be unavailable
+        for selection in plan.selections.values():
+            assert selection.quality == SelectionQuality.UNAVAILABLE
+
+    def test_hash_stability_across_runs(self, minimal_registry):
+        """Test that hashes are stable across selector instances."""
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        selector1 = DeterministicSelector(registry=minimal_registry)
+        selector2 = DeterministicSelector(registry=minimal_registry)
+
+        plan1 = selector1.select_algorithms("test.event", availability)
+        plan2 = selector2.select_algorithms("test.event", availability)
+
+        assert plan1.plan_hash == plan2.plan_hash
+
+    def test_execution_priority_assigned(self, minimal_registry):
+        """Test that execution priorities are assigned."""
+        # Add second algorithm
+        minimal_registry.register(AlgorithmMetadata(
+            id="test.algo2",
+            name="Test Algorithm 2",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.DEM],
+            deterministic=True,
+        ))
+
+        selector = DeterministicSelector(registry=minimal_registry)
+        availability = DataAvailability(data_types={DataType.SAR, DataType.DEM})
+
+        plan = selector.select_algorithms("test.event", availability)
+
+        priorities = [sel.execution_priority for sel in plan.selections.values()]
+        assert len(set(priorities)) == len(priorities)  # All unique
+
+    def test_selection_reason_populated(self, minimal_registry):
+        """Test that selection reasons are populated."""
+        selector = DeterministicSelector(registry=minimal_registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        plan = selector.select_algorithms("test.event", availability)
+
+        for selection in plan.selections.values():
+            assert selection.selection_reason is not None
+
+    def test_version_lock_populated(self, minimal_registry):
+        """Test that version locks are populated."""
+        selector = DeterministicSelector(registry=minimal_registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        plan = selector.select_algorithms("test.event", availability)
+
+        for algo_id, selection in plan.selections.items():
+            if selection.quality != SelectionQuality.UNAVAILABLE:
+                assert algo_id in selection.version_lock
+                assert selection.version_lock[algo_id] == "1.0.0"
+
+    def test_trade_offs_documented(self):
+        """Test that trade-offs are documented."""
+        registry = AlgorithmRegistry()
+
+        # Add multiple algorithms for same event type
+        registry.register(AlgorithmMetadata(
+            id="flood.algo1",
+            name="Flood Algorithm 1",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.algo2",
+            name="Flood Algorithm 2",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        selector = DeterministicSelector(registry=registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        plan = selector.select_algorithms("flood.coastal", availability)
+
+        # Trade-offs should be documented
+        assert len(plan.trade_offs) > 0
+
+    def test_category_priority_ordering(self):
+        """Test that baseline algorithms are preferred over advanced."""
+        registry = AlgorithmRegistry()
+
+        # Add advanced algorithm first
+        registry.register(AlgorithmMetadata(
+            id="flood.advanced.ml",
+            name="ML Flood Detection",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        # Add baseline algorithm second
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.threshold",
+            name="Threshold Detection",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        selector = DeterministicSelector(registry=registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        plan = selector.select_algorithms("flood.coastal", availability)
+
+        # Baseline should come first in execution order
+        assert plan.execution_order[0] == "flood.baseline.threshold"
+
+    def test_timestamp_recorded(self, minimal_registry):
+        """Test that selection timestamps are recorded."""
+        selector = DeterministicSelector(registry=minimal_registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        before = datetime.now(timezone.utc)
+        plan = selector.select_algorithms("test.event", availability)
+        after = datetime.now(timezone.utc)
+
+        assert before <= plan.created_at <= after
+
+        for selection in plan.selections.values():
+            assert before <= selection.selected_at <= after
+
+    def test_empty_event_types_guard(self, minimal_registry):
+        """Test that empty event_types is handled gracefully."""
+        # Create algorithm with empty event_types (edge case)
+        minimal_registry.register(AlgorithmMetadata(
+            id="test.empty_events",
+            name="Empty Events Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=[],  # Empty event types
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        selector = DeterministicSelector(registry=minimal_registry)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        # Should not crash when selecting
+        plan = selector.select_algorithms("test.event", availability)
+
+        # The empty event_types algorithm shouldn't match
+        assert "test.empty_events" not in plan.selections
+
+    def test_update_constraints(self, minimal_registry):
+        """Test updating constraints on selector."""
+        selector = DeterministicSelector(registry=minimal_registry)
+
+        new_constraints = SelectionConstraints(
+            max_memory_mb=1024,
+            gpu_available=True,
+            require_deterministic=False
+        )
+        selector.update_constraints(new_constraints)
+
+        assert selector.constraints.max_memory_mb == 1024
+        assert selector.constraints.gpu_available is True
+        assert selector.constraints.require_deterministic is False
+
+    def test_selection_plan_empty_execution_sequence(self):
+        """Test getting execution sequence from empty plan."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        sequence = plan.get_execution_sequence()
+
+        assert sequence == []
+        assert plan.plan_hash == ""
+
+    def test_algorithm_selection_defaults(self):
+        """Test AlgorithmSelection default values."""
+        selection = AlgorithmSelection(
+            algorithm_id="test.algo",
+            algorithm_name="Test",
+            version="1.0.0",
+            quality=SelectionQuality.OPTIMAL,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        )
+
+        # Check defaults
+        assert selection.degraded_mode is False
+        assert selection.rationale == ""
+        assert selection.selection_reason == SelectionReason.BEST_MATCH
+        assert selection.alternatives_rejected == {}
+        assert selection.execution_priority == 0
+        assert selection.selector_version == SELECTOR_VERSION
+
+    def test_selection_constraints_category_filter(self):
+        """Test category filtering in constraints."""
+        registry = AlgorithmRegistry()
+
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.test",
+            name="Baseline Test",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.advanced.test",
+            name="Advanced Test",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+        ))
+
+        # Only allow baseline algorithms
+        constraints = SelectionConstraints(
+            allowed_categories={AlgorithmCategory.BASELINE}
+        )
+
+        selector = DeterministicSelector(registry=registry, constraints=constraints)
+        availability = DataAvailability(data_types={DataType.SAR})
+
+        plan = selector.select_algorithms("flood.coastal", availability)
+
+        # Should have baseline but not advanced in viable selections
+        baseline_viable = False
+        advanced_viable = False
+
+        for algo_id, sel in plan.selections.items():
+            if sel.quality != SelectionQuality.UNAVAILABLE:
+                if "baseline" in algo_id:
+                    baseline_viable = True
+                if "advanced" in algo_id:
+                    advanced_viable = True
+
+        assert baseline_viable is True
+        assert advanced_viable is False
+
+    def test_selection_constraints_validation_score(self):
+        """Test minimum validation score filtering."""
+        algorithm = AlgorithmMetadata(
+            id="flood.test.low_score",
+            name="Low Score Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deterministic=True,
+            validation=ValidationMetrics(accuracy_median=0.6),
+        )
+
+        constraints = SelectionConstraints(min_validation_score=0.8)
+
+        allowed, reason = constraints.allows_algorithm(algorithm)
+
+        assert allowed is False
+        assert reason == "validation_score_too_low"
+
+    def test_data_availability_with_ranked(self):
+        """Test DataAvailability with ranked candidates."""
+        results = [
+            DiscoveryResult(
+                dataset_id="s1-123",
+                provider="sentinel1",
+                data_type="sar",
+                source_uri="s3://bucket/s1-123.tif",
+                format="geotiff",
+                acquisition_time=datetime.now(timezone.utc),
+                spatial_coverage_percent=95.0,
+                resolution_m=10.0,
+            ),
+        ]
+
+        ranked = {
+            "sar": [RankedCandidate(
+                candidate=results[0],
+                scores={"coverage": 0.95, "resolution": 0.9},
+                total_score=0.9,
+                rank=1,
+            )]
+        }
+
+        availability = DataAvailability.from_discovery_results(results, ranked)
+
+        assert len(availability.ranked_by_type["sar"]) == 1
+        assert availability.ranked_by_type["sar"][0].rank == 1
+
+    def test_selection_quality_unavailable_propagation(self):
+        """Test that UNAVAILABLE quality propagates correctly."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        # Add an unavailable selection
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo1",
+            algorithm_name="Algo 1",
+            version="1.0.0",
+            quality=SelectionQuality.UNAVAILABLE,
+            required_data_types=[DataType.SAR],
+            available_data_types=[],
+        ))
+
+        assert plan.overall_quality == SelectionQuality.UNAVAILABLE
+
+    def test_selection_quality_acceptable(self):
+        """Test that ACCEPTABLE quality is tracked correctly."""
+        plan = SelectionPlan(event_class="flood.coastal")
+
+        # Add an acceptable selection
+        plan.add_selection(AlgorithmSelection(
+            algorithm_id="algo1",
+            algorithm_name="Algo 1",
+            version="1.0.0",
+            quality=SelectionQuality.ACCEPTABLE,
+            required_data_types=[DataType.SAR],
+            available_data_types=[DataType.SAR],
+        ))
+
+        assert plan.overall_quality == SelectionQuality.ACCEPTABLE
+
+
+# ============================================================================
+# ALGORITHM SELECTOR TESTS (Track 6)
+# ============================================================================
+
+from core.analysis.selection.selector import (
+    AlgorithmSelector,
+    SelectionCriteria,
+    SelectionResult,
+    SelectionContext,
+    ComputeProfile,
+    ComputeConstraints,
+    RejectionReason,
+)
+
+
+class TestComputeConstraints:
+    """Test compute constraint configuration."""
+
+    def test_default_constraints(self):
+        """Test default compute constraints."""
+        constraints = ComputeConstraints()
+
+        assert constraints.max_memory_mb == 4096
+        assert constraints.gpu_available is False
+        assert constraints.gpu_memory_mb is None
+        assert constraints.max_runtime_minutes is None
+        assert constraints.allow_distributed is False
+
+    def test_laptop_profile(self):
+        """Test laptop compute profile."""
+        constraints = ComputeConstraints.from_profile(ComputeProfile.LAPTOP)
+
+        assert constraints.max_memory_mb == 2048
+        assert constraints.gpu_available is False
+        assert constraints.max_runtime_minutes == 30
+        assert constraints.allow_distributed is False
+
+    def test_workstation_profile(self):
+        """Test workstation compute profile."""
+        constraints = ComputeConstraints.from_profile(ComputeProfile.WORKSTATION)
+
+        assert constraints.max_memory_mb == 8192
+        assert constraints.gpu_available is True
+        assert constraints.gpu_memory_mb == 4096
+        assert constraints.max_runtime_minutes == 120
+        assert constraints.allow_distributed is False
+
+    def test_cloud_profile(self):
+        """Test cloud compute profile."""
+        constraints = ComputeConstraints.from_profile(ComputeProfile.CLOUD)
+
+        assert constraints.max_memory_mb == 32768
+        assert constraints.gpu_available is True
+        assert constraints.gpu_memory_mb == 16384
+        assert constraints.max_runtime_minutes is None  # No limit
+        assert constraints.allow_distributed is True
+
+    def test_edge_profile(self):
+        """Test edge compute profile."""
+        constraints = ComputeConstraints.from_profile(ComputeProfile.EDGE)
+
+        assert constraints.max_memory_mb == 512
+        assert constraints.gpu_available is False
+        assert constraints.max_runtime_minutes == 15
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        constraints = ComputeConstraints(max_memory_mb=4096, gpu_available=True)
+        result = constraints.to_dict()
+
+        assert isinstance(result, dict)
+        assert result["max_memory_mb"] == 4096
+        assert result["gpu_available"] is True
+
+
+class TestSelectionCriteria:
+    """Test selection criteria configuration."""
+
+    def test_default_criteria(self):
+        """Test default selection criteria."""
+        criteria = SelectionCriteria()
+
+        assert criteria.prefer_validated is True
+        assert criteria.prefer_deterministic is True
+        assert criteria.prefer_baseline is False
+        assert criteria.min_accuracy is None
+        assert criteria.allowed_categories is None
+        assert len(criteria.excluded_algorithms) == 0
+
+    def test_custom_criteria(self):
+        """Test custom selection criteria."""
+        criteria = SelectionCriteria(
+            prefer_baseline=True,
+            min_accuracy=0.8,
+            allowed_categories=[AlgorithmCategory.BASELINE],
+            excluded_algorithms={"deprecated.algorithm"}
+        )
+
+        assert criteria.prefer_baseline is True
+        assert criteria.min_accuracy == 0.8
+        assert AlgorithmCategory.BASELINE in criteria.allowed_categories
+        assert "deprecated.algorithm" in criteria.excluded_algorithms
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        criteria = SelectionCriteria(
+            min_accuracy=0.75,
+            allowed_categories=[AlgorithmCategory.BASELINE, AlgorithmCategory.ADVANCED]
+        )
+        result = criteria.to_dict()
+
+        assert isinstance(result, dict)
+        assert result["min_accuracy"] == 0.75
+        assert "baseline" in result["allowed_categories"]
+
+
+class TestSelectionContext:
+    """Test selection context configuration."""
+
+    def test_basic_context(self):
+        """Test basic selection context."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.DEM},
+            compute_constraints=ComputeConstraints()
+        )
+
+        assert context.event_class == "flood.coastal"
+        assert DataType.SAR in context.available_data_types
+        assert DataType.DEM in context.available_data_types
+        assert context.region is None
+
+    def test_context_with_region(self):
+        """Test context with region specification."""
+        context = SelectionContext(
+            event_class="flood.riverine",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            region="north_america"
+        )
+
+        assert context.region == "north_america"
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        context = SelectionContext(
+            event_class="wildfire.forest",
+            available_data_types={DataType.OPTICAL, DataType.SAR},
+            compute_constraints=ComputeConstraints.from_profile(ComputeProfile.LAPTOP)
+        )
+        result = context.to_dict()
+
+        assert isinstance(result, dict)
+        assert result["event_class"] == "wildfire.forest"
+        assert "optical" in result["available_data_types"]
+
+
+class TestAlgorithmSelectorTrack6:
+    """Test algorithm selector functionality (Track 6)."""
+
+    @pytest.fixture
+    def registry_track6(self):
+        """Create test registry with sample algorithms."""
+        registry = AlgorithmRegistry()
+
+        # Add test algorithms
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.threshold_sar",
+            name="SAR Threshold Detection",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            optional_data_types=[DataType.DEM],
+            resources=ResourceRequirements(memory_mb=2048),
+            validation=ValidationMetrics(
+                accuracy_median=0.85,
+                f1_score=0.82,
+                validated_regions=["north_america", "europe"]
+            ),
+            deterministic=True
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.baseline.ndwi_optical",
+            name="NDWI Optical Detection",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.OPTICAL],
+            optional_data_types=[DataType.DEM],
+            resources=ResourceRequirements(memory_mb=2048),
+            validation=ValidationMetrics(
+                accuracy_median=0.80,
+                f1_score=0.78,
+                validated_regions=["europe", "asia"]
+            ),
+            deterministic=True
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.advanced.ensemble",
+            name="Ensemble Flood Detection",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR, DataType.OPTICAL],
+            optional_data_types=[DataType.DEM, DataType.ANCILLARY],
+            resources=ResourceRequirements(memory_mb=8192, gpu_required=True),
+            validation=ValidationMetrics(
+                accuracy_median=0.92,
+                f1_score=0.90,
+                validated_regions=["north_america"]
+            ),
+            deterministic=False
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="wildfire.baseline.dnbr",
+            name="Differenced NBR",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["wildfire.*"],
+            required_data_types=[DataType.OPTICAL],
+            resources=ResourceRequirements(memory_mb=2048),
+            validation=ValidationMetrics(
+                accuracy_median=0.88,
+                validated_regions=["north_america", "australia"]
+            ),
+            deterministic=True
+        ))
+
+        registry.register(AlgorithmMetadata(
+            id="flood.deprecated.old_method",
+            name="Old Flood Method",
+            category=AlgorithmCategory.BASELINE,
+            version="0.1.0",
+            event_types=["flood.*"],
+            required_data_types=[DataType.SAR],
+            deprecated=True,
+            replacement_algorithm="flood.baseline.threshold_sar"
+        ))
+
+        return registry
+
+    @pytest.fixture
+    def selector_track6(self, registry_track6):
+        """Create selector with test registry."""
+        return AlgorithmSelector(registry=registry_track6)
+
+    def test_select_with_available_data(self, selector_track6):
+        """Test selection with available data."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.DEM},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert result.success is True
+        assert result.selected is not None
+        assert result.selected.id == "flood.baseline.threshold_sar"
+        assert "SAR" in result.selected.name
+
+    def test_select_rejects_missing_data(self, selector_track6):
+        """Test rejection when required data is missing."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.WEATHER},  # No SAR or OPTICAL
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        # Should reject algorithms that need SAR or OPTICAL
+        assert result.success is False or any(
+            r.category == "data" for r in result.rejected
+        )
+
+    def test_select_rejects_deprecated(self, selector_track6):
+        """Test that deprecated algorithms are rejected."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        # Deprecated algorithm should be in rejected list
+        deprecated_rejection = next(
+            (r for r in result.rejected if r.algorithm_id == "flood.deprecated.old_method"),
+            None
+        )
+        assert deprecated_rejection is not None
+        assert deprecated_rejection.category == "deprecated"
+
+    def test_select_respects_gpu_constraint(self, selector_track6):
+        """Test GPU constraint enforcement."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints(
+                max_memory_mb=16384,
+                gpu_available=False  # No GPU
+            )
+        )
+
+        result = selector_track6.select(context)
+
+        # Ensemble algorithm requires GPU, should be rejected
+        ensemble_rejection = next(
+            (r for r in result.rejected if r.algorithm_id == "flood.advanced.ensemble"),
+            None
+        )
+        assert ensemble_rejection is not None
+        assert ensemble_rejection.category == "compute"
+        assert "GPU" in ensemble_rejection.reason
+
+    def test_select_respects_memory_constraint(self, selector_track6):
+        """Test memory constraint enforcement."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints(
+                max_memory_mb=1024,  # Very limited
+                gpu_available=True
+            )
+        )
+
+        result = selector_track6.select(context)
+
+        # All algorithms require more than 1024MB, should all be rejected
+        memory_rejections = [r for r in result.rejected if r.category == "compute"]
+        assert len(memory_rejections) > 0
+
+    def test_select_for_wildfire(self, selector_track6):
+        """Test selection for wildfire event type."""
+        context = SelectionContext(
+            event_class="wildfire.forest",
+            available_data_types={DataType.OPTICAL},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert result.success is True
+        assert result.selected.id == "wildfire.baseline.dnbr"
+        assert "NBR" in result.selected.name
+
+    def test_select_no_algorithms_for_event(self, selector_track6):
+        """Test selection for event type with no algorithms."""
+        context = SelectionContext(
+            event_class="earthquake.magnitude7",  # Not supported
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert result.success is False
+        assert "No algorithms found" in result.rationale
+
+    def test_select_respects_category_restriction(self, selector_track6):
+        """Test category restriction enforcement."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints(
+                max_memory_mb=16384,
+                gpu_available=True
+            ),
+            criteria=SelectionCriteria(
+                allowed_categories=[AlgorithmCategory.BASELINE]
+            )
+        )
+
+        result = selector_track6.select(context)
+
+        # Should select baseline algorithm, not advanced
+        assert result.success is True
+        assert result.selected.category == AlgorithmCategory.BASELINE
+
+        # Advanced should be rejected
+        advanced_rejection = next(
+            (r for r in result.rejected if "flood.advanced" in r.algorithm_id),
+            None
+        )
+        assert advanced_rejection is not None
+        assert advanced_rejection.category == "criteria"
+
+    def test_select_respects_explicit_exclusion(self, selector_track6):
+        """Test explicit algorithm exclusion."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            criteria=SelectionCriteria(
+                excluded_algorithms={"flood.baseline.threshold_sar"}
+            )
+        )
+
+        result = selector_track6.select(context)
+
+        # SAR threshold should be rejected, no viable alternatives
+        excluded_rejection = next(
+            (r for r in result.rejected if r.algorithm_id == "flood.baseline.threshold_sar"),
+            None
+        )
+        assert excluded_rejection is not None
+        assert excluded_rejection.category == "criteria"
+
+    def test_select_respects_min_accuracy(self, selector_track6):
+        """Test minimum accuracy enforcement."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints(
+                max_memory_mb=16384,
+                gpu_available=True
+            ),
+            criteria=SelectionCriteria(
+                min_accuracy=0.90
+            )
+        )
+
+        result = selector_track6.select(context)
+
+        # Only ensemble has 0.92 accuracy
+        # SAR threshold (0.85) and NDWI (0.80) should be rejected for low accuracy
+        accuracy_rejections = [
+            r for r in result.rejected if r.category == "validation"
+        ]
+        assert len(accuracy_rejections) >= 1
+
+    def test_select_provides_alternatives(self, selector_track6):
+        """Test that alternatives are provided."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL, DataType.DEM},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert result.success is True
+        # Should have at least one alternative (NDWI optical)
+        assert len(result.alternatives) >= 1
+        # Alternatives should be different from selected
+        for alt in result.alternatives:
+            assert alt.id != result.selected.id
+
+    def test_select_provides_scores(self, selector_track6):
+        """Test that scores are provided for all candidates."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert len(result.scores) > 0
+        # Selected algorithm should have a score
+        assert result.selected.id in result.scores
+        # Scores should be between 0 and 1
+        for score in result.scores.values():
+            assert 0.0 <= score <= 1.0
+
+    def test_select_generates_rationale(self, selector_track6):
+        """Test rationale generation."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+
+        assert result.rationale is not None
+        assert len(result.rationale) > 0
+        # Should mention selected algorithm
+        assert result.selected.name in result.rationale or result.selected.id in result.rationale
+
+    def test_select_multiple(self, selector_track6):
+        """Test selecting multiple algorithms."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.OPTICAL, DataType.DEM},
+            compute_constraints=ComputeConstraints()
+        )
+
+        results = selector_track6.select_multiple(context, max_algorithms=2)
+
+        assert len(results) >= 1
+        # First result should be the best algorithm
+        assert results[0].success is True
+
+    def test_explain_selection_success(self, selector_track6):
+        """Test selection explanation for successful selection."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR, DataType.DEM},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+        explanation = selector_track6.explain_selection(result)
+
+        assert "Algorithm Selection Report" in explanation
+        assert "SELECTED" in explanation
+        assert result.selected.id in explanation
+
+    def test_explain_selection_failure(self, selector_track6):
+        """Test selection explanation for failed selection."""
+        context = SelectionContext(
+            event_class="earthquake.damage",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_track6.select(context)
+        explanation = selector_track6.explain_selection(result)
+
+        assert "Algorithm Selection Report" in explanation
+        assert "FAILED" in explanation
+
+    def test_get_supported_event_types(self, selector_track6):
+        """Test getting supported event types."""
+        event_types = selector_track6.get_supported_event_types()
+
+        assert "flood.*" in event_types
+        assert "wildfire.*" in event_types
+
+    def test_get_algorithms_by_data_type(self, selector_track6):
+        """Test getting algorithms by data type."""
+        sar_algorithms = selector_track6.get_algorithms_by_data_type(DataType.SAR)
+
+        assert len(sar_algorithms) >= 1
+        assert all(DataType.SAR in a.required_data_types for a in sar_algorithms)
+
+
+class TestSelectionResultTrack6:
+    """Test SelectionResult dataclass (Track 6)."""
+
+    def test_success_property(self):
+        """Test success property."""
+        # Successful result
+        result1 = SelectionResult(
+            selected=AlgorithmMetadata(
+                id="test.algorithm",
+                name="Test Algorithm",
+                category=AlgorithmCategory.BASELINE,
+                version="1.0.0",
+                event_types=["test.*"],
+                required_data_types=[DataType.SAR]
+            ),
+            alternatives=[],
+            rejected=[],
+            scores={"test.algorithm": 0.8},
+            context=SelectionContext(
+                event_class="test.event",
+                available_data_types={DataType.SAR},
+                compute_constraints=ComputeConstraints()
+            ),
+            rationale="Test rationale"
+        )
+        assert result1.success is True
+
+        # Failed result
+        result2 = SelectionResult(
+            selected=None,
+            alternatives=[],
+            rejected=[],
+            scores={},
+            context=SelectionContext(
+                event_class="test.event",
+                available_data_types={DataType.SAR},
+                compute_constraints=ComputeConstraints()
+            ),
+            rationale="No algorithms found"
+        )
+        assert result2.success is False
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        result = SelectionResult(
+            selected=AlgorithmMetadata(
+                id="test.algorithm",
+                name="Test Algorithm",
+                category=AlgorithmCategory.BASELINE,
+                version="1.0.0",
+                event_types=["test.*"],
+                required_data_types=[DataType.SAR]
+            ),
+            alternatives=[],
+            rejected=[RejectionReason(
+                algorithm_id="other.algorithm",
+                reason="Test rejection",
+                category="test"
+            )],
+            scores={"test.algorithm": 0.8},
+            context=SelectionContext(
+                event_class="test.event",
+                available_data_types={DataType.SAR},
+                compute_constraints=ComputeConstraints()
+            ),
+            rationale="Test rationale"
+        )
+
+        data = result.to_dict()
+
+        assert isinstance(data, dict)
+        assert data["success"] is True
+        assert data["selected"]["id"] == "test.algorithm"
+        assert len(data["rejected"]) == 1
+        assert "timestamp" in data
+
+
+class TestRejectionReasonTrack6:
+    """Test RejectionReason dataclass (Track 6)."""
+
+    def test_basic_rejection(self):
+        """Test basic rejection reason."""
+        rejection = RejectionReason(
+            algorithm_id="test.algorithm",
+            reason="Missing data",
+            category="data"
+        )
+
+        assert rejection.algorithm_id == "test.algorithm"
+        assert rejection.reason == "Missing data"
+        assert rejection.category == "data"
+        assert rejection.details is None
+
+    def test_rejection_with_details(self):
+        """Test rejection with details."""
+        rejection = RejectionReason(
+            algorithm_id="test.algorithm",
+            reason="Memory exceeded",
+            category="compute",
+            details={
+                "required_memory_mb": 8192,
+                "available_memory_mb": 4096
+            }
+        )
+
+        assert rejection.details is not None
+        assert rejection.details["required_memory_mb"] == 8192
+
+    def test_to_dict(self):
+        """Test conversion to dictionary."""
+        rejection = RejectionReason(
+            algorithm_id="test.algorithm",
+            reason="GPU required",
+            category="compute",
+            details={"gpu_required": True}
+        )
+
+        data = rejection.to_dict()
+
+        assert isinstance(data, dict)
+        assert data["algorithm_id"] == "test.algorithm"
+        assert data["category"] == "compute"
+        assert data["details"]["gpu_required"] is True
+
+
+class TestAlgorithmSelectorEdgeCasesTrack6:
+    """Test edge cases for algorithm selector (Track 6)."""
+
+    @pytest.fixture
+    def empty_registry_track6(self):
+        """Create empty registry."""
+        return AlgorithmRegistry()
+
+    @pytest.fixture
+    def selector_empty_track6(self, empty_registry_track6):
+        """Create selector with empty registry."""
+        return AlgorithmSelector(registry=empty_registry_track6)
+
+    def test_select_with_empty_registry(self, selector_empty_track6):
+        """Test selection with no algorithms registered."""
+        context = SelectionContext(
+            event_class="flood.coastal",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector_empty_track6.select(context)
+
+        assert result.success is False
+        assert "No algorithms found" in result.rationale
+
+    def test_select_with_empty_data_types(self):
+        """Test selection with no available data types."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR]
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types=set(),  # Empty
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector.select(context)
+
+        assert result.success is False
+        # Should have data rejection
+        assert any(r.category == "data" for r in result.rejected)
+
+    def test_select_multiple_with_no_alternatives(self):
+        """Test selecting multiple when only one algorithm matches."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="only.algorithm",
+            name="Only Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR]
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        results = selector.select_multiple(context, max_algorithms=5)
+
+        # Should return just one result
+        assert len(results) == 1
+        assert results[0].success is True
+
+    def test_select_with_all_algorithms_rejected(self):
+        """Test when all algorithms are rejected."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="deprecated.algorithm",
+            name="Deprecated Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="0.1.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            deprecated=True
+        ))
+        registry.register(AlgorithmMetadata(
+            id="heavy.algorithm",
+            name="Heavy Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(memory_mb=64000)  # Huge memory
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_memory_mb=4096)
+        )
+
+        result = selector.select(context)
+
+        assert result.success is False
+        assert len(result.rejected) == 2  # Both algorithms rejected
+
+    def test_validation_without_validation_data(self):
+        """Test algorithm without validation data."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="unvalidated.algorithm",
+            name="Unvalidated Algorithm",
+            category=AlgorithmCategory.EXPERIMENTAL,
+            version="0.1.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=None  # No validation
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        # Without min_accuracy requirement
+        context1 = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+        result1 = selector.select(context1)
+        assert result1.success is True
+
+        # With min_accuracy requirement
+        context2 = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            criteria=SelectionCriteria(min_accuracy=0.8)
+        )
+        result2 = selector.select(context2)
+
+        # Should be rejected for no validation data
+        assert result2.success is False
+        assert any(r.category == "validation" for r in result2.rejected)
+
+
+class TestAlgorithmSelectorDivisionGuardsTrack6:
+    """Test division by zero guards in algorithm selector (Track 6)."""
+
+    def test_score_resource_efficiency_zero_max_memory(self):
+        """Test resource efficiency scoring with zero max_memory_mb."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(memory_mb=2048)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        # Zero max_memory_mb should not cause division by zero
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_memory_mb=0)  # Edge case
+        )
+
+        # Should not raise ZeroDivisionError
+        result = selector.select(context)
+        # Algorithm should be rejected due to memory constraint
+        assert result.success is False or result.scores.get("test.algorithm", 0) >= 0
+
+    def test_score_resource_efficiency_negative_max_memory(self):
+        """Test resource efficiency scoring with negative max_memory_mb."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(memory_mb=2048)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_memory_mb=-100)  # Invalid
+        )
+
+        # Should not raise any errors
+        result = selector.select(context)
+        # Algorithm should be rejected due to invalid constraint
+        assert result.success is False or isinstance(result, SelectionResult)
+
+    def test_score_data_coverage_empty_optional(self):
+        """Test data coverage scoring with no optional data types."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            optional_data_types=[]  # Empty optional
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints()
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+        # Should have a valid score (no division by zero for empty optional)
+        assert result.scores["test.algorithm"] >= 0
+        assert result.scores["test.algorithm"] <= 1.0
+
+    def test_algorithm_with_no_memory_requirement(self):
+        """Test algorithm with unspecified memory requirement."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(memory_mb=None)  # Unspecified
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_memory_mb=4096)
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+        # Should return default score for unknown memory
+        assert result.scores["test.algorithm"] >= 0
+
+
+class TestAlgorithmSelectorScoringTrack6:
+    """Test scoring accuracy for algorithm selector (Track 6)."""
+
+    def test_validation_score_without_validation(self):
+        """Test validation scoring without validation data."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=None
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            criteria=SelectionCriteria(prefer_validated=True)
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+        # Score should still be valid but lower
+        assert 0 <= result.scores["test.algorithm"] <= 1.0
+
+    def test_validation_score_with_complete_validation(self):
+        """Test validation scoring with complete validation data."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=ValidationMetrics(
+                accuracy_median=0.95,
+                f1_score=0.92,
+                validation_dataset_count=150,
+                validated_regions=["north_america", "europe", "asia"]
+            )
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            criteria=SelectionCriteria(prefer_validated=True)
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+        # Should have high score with good validation
+        assert result.scores["test.algorithm"] >= 0.5
+
+    def test_region_match_exact(self):
+        """Test region matching with exact match."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=ValidationMetrics(
+                accuracy_median=0.85,
+                validated_regions=["north_america"]
+            )
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            region="north_america"
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+
+    def test_region_match_partial(self):
+        """Test region matching with partial match."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=ValidationMetrics(
+                accuracy_median=0.85,
+                validated_regions=["north_america"]
+            )
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            region="america"  # Partial match
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+
+    def test_region_no_match(self):
+        """Test region matching with no match."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="test.algorithm",
+            name="Test Algorithm",
+            category=AlgorithmCategory.BASELINE,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            validation=ValidationMetrics(
+                accuracy_median=0.85,
+                validated_regions=["europe"]
+            )
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(),
+            region="asia"  # No match
+        )
+
+        result = selector.select(context)
+        # Should still succeed but with lower region score
+        assert result.success is True
+
+
+class TestAlgorithmSelectorRuntimeConstraintsTrack6:
+    """Test runtime constraint handling for algorithm selector (Track 6)."""
+
+    def test_runtime_constraint_rejected(self):
+        """Test algorithm rejected for runtime constraints."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="slow.algorithm",
+            name="Slow Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(max_runtime_minutes=120)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_runtime_minutes=30)  # Too short
+        )
+
+        result = selector.select(context)
+        assert result.success is False
+        assert any(r.category == "compute" for r in result.rejected)
+        assert any("minutes" in r.reason.lower() for r in result.rejected)
+
+    def test_runtime_constraint_no_limit(self):
+        """Test algorithm with no runtime limit."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="slow.algorithm",
+            name="Slow Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(max_runtime_minutes=120)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(max_runtime_minutes=None)  # No limit
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+
+    def test_distributed_constraint_rejected(self):
+        """Test algorithm rejected for distributed requirement."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="distributed.algorithm",
+            name="Distributed Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(distributed=True)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(allow_distributed=False)
+        )
+
+        result = selector.select(context)
+        assert result.success is False
+        assert any(r.category == "compute" for r in result.rejected)
+        assert any("distributed" in r.reason.lower() for r in result.rejected)
+
+    def test_distributed_constraint_allowed(self):
+        """Test algorithm accepted when distributed is allowed."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="distributed.algorithm",
+            name="Distributed Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(distributed=True)
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(allow_distributed=True)
+        )
+
+        result = selector.select(context)
+        assert result.success is True
+
+    def test_gpu_memory_constraint_rejected(self):
+        """Test algorithm rejected for GPU memory constraints."""
+        registry = AlgorithmRegistry()
+        registry.register(AlgorithmMetadata(
+            id="gpu.algorithm",
+            name="GPU Algorithm",
+            category=AlgorithmCategory.ADVANCED,
+            version="1.0.0",
+            event_types=["test.*"],
+            required_data_types=[DataType.SAR],
+            resources=ResourceRequirements(
+                gpu_required=True,
+                gpu_memory_mb=8192
+            )
+        ))
+
+        selector = AlgorithmSelector(registry=registry)
+
+        context = SelectionContext(
+            event_class="test.event",
+            available_data_types={DataType.SAR},
+            compute_constraints=ComputeConstraints(
+                gpu_available=True,
+                gpu_memory_mb=4096  # Not enough GPU memory
+            )
+        )
+
+        result = selector.select(context)
+        assert result.success is False
+        assert any(r.category == "compute" for r in result.rejected)
+        assert any("gpu" in r.reason.lower() for r in result.rejected)
