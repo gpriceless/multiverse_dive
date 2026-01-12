@@ -262,37 +262,6 @@ See the `examples/` directory for sample event configurations:
 - `datasource_sentinel1.yaml` - SAR data source configuration
 - `pipeline_flood_sar.yaml` - Custom pipeline definition
 
-## Current Status
-
-| Group | Status | Description |
-|-------|--------|-------------|
-| **A** | ✅ Complete | Foundation schemas, project structure |
-| **B** | ✅ Complete | Schema validation, examples |
-| **C** | ✅ Complete | Intent resolution, NLP classification |
-| **D** | ✅ Complete | Data discovery, provider implementations |
-| **E** | ✅ Complete | Algorithm library (flood, wildfire, storm) |
-| **F** | ✅ Complete | Intelligent selection (constraints, ranking, sensor strategy) |
-| **G** | ✅ Complete | Ingestion & normalization pipeline |
-| **H** | ✅ Complete | Fusion & analysis engine |
-| **I** | ✅ Complete | Quality control (sanity, validation, uncertainty, reporting) |
-| **J** | ✅ Complete | Agent orchestration (5 autonomous agents, message bus) |
-| **K** | ✅ Complete | API gateway (FastAPI, auth, rate limiting, webhooks) |
-| **L** | ✅ Complete | Lightweight CLI (tiling, execution profiles) |
-| **M** | ✅ Complete | Resilience & fallbacks (quality assessment, sensor chains, degraded mode) |
-| **N** | ✅ Complete | Containerization (Docker, Kubernetes, CI/CD, edge deployment) |
-
-**Project Complete**: All 14 implementation groups finished. 3,282 Python files, 462,608 lines of code.
-
-See [ROADMAP.md](ROADMAP.md) for detailed implementation progress.
-
-## Key Documents
-
-| Document | Purpose |
-|----------|---------|
-| [OPENSPEC.md](OPENSPEC.md) | Complete system design specification |
-| [ROADMAP.md](ROADMAP.md) | Implementation roadmap with parallel work groups |
-| [FIXES.md](FIXES.md) | Known bugs with exact code fixes |
-| [CLAUDE.md](CLAUDE.md) | Instructions for AI agents working on this codebase |
 
 ## Supported Hazard Types
 
