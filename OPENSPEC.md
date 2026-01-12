@@ -3756,3 +3756,942 @@ multiverse_dive/
     ├── test_schemas.py
     └── test_intent.py
 ```
+
+---
+
+## Distributed Raster Processing Architecture
+
+**Last Updated:** 2026-01-11
+**Status:** Specification for next implementation phase
+
+### Challenge: Large-Scale Earth Observation Processing
+
+#### Problem Statement
+
+Earth observation datasets are massive and growing:
+- Single Sentinel-2 scene: 500MB-5GB (100km x 100km at 10m resolution)
+- Continental analysis: 100,000km² = 1,000+ scenes = 500GB-5TB
+- Current serial tiled processing: 20-30 minutes for 100km² on laptop
+- Memory constraints: Existing tiling works but doesn't parallelize across cores
+- Download bottleneck: Must download entire scenes before processing begins
+
+#### Goals
+
+1. **Laptop-Scale Parallelization:** Leverage all CPU cores for 4-8x speedup
+2. **Cloud-Scale Distribution:** Process continental areas on Spark/Flink clusters  
+3. **Streaming Ingestion:** Never download full scenes—stream only needed tiles
+4. **Transparent Scaling:** Same API works on laptop or 100-node cluster
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Event Specification                          │
+│         (Area: 1000km², Event: flood.coastal)                   │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Data Discovery (STAC)                        │
+│  Finds: 25 Sentinel-1 scenes, 30 Sentinel-2 scenes, DEM        │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│               Virtual Raster Index Builder                      │◄── NEW
+│  Creates: GDAL VRT referencing COG tiles via HTTP               │
+│  NO DOWNLOAD: Index metadata only (~100KB per scene)            │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Execution Router                             │◄── NEW
+│  Decides: Local Dask vs Distributed Dask vs Apache Sedona       │
+│  Based on: AOI size, available resources, cluster availability  │
+└───┬─────────────┬───────────────────────┬──────────────────────┘
+    │             │                       │
+    ▼             ▼                       ▼
+┌─────────┐ ┌──────────────┐    ┌─────────────────────┐
+│ Serial  │ │ Dask Local   │    │ Dask Distributed /  │
+│ (<100   │ │ (100-1000    │    │ Apache Sedona       │
+│  tiles) │ │  tiles)      │    │ (1000+ tiles)       │
+└─────────┘ └──────────────┘    └─────────────────────┘
+    │             │                       │
+    └─────────────┴───────────────────────┘
+                  │
+                  ▼
+         ┌─────────────────────┐
+         │ Streaming Tile      │◄── NEW
+         │ Processing          │
+         │ (HTTP Range Reads)  │
+         └──────────┬──────────┘
+                    │
+                    ▼
+         ┌─────────────────────┐
+         │ Result Stitching    │
+         │ & Mosaic Generation │
+         └─────────────────────┘
+```
+
+### Component 1: Virtual Raster Index
+
+**Purpose:** Build lightweight index of available raster data without downloading
+
+**Location:** `core/data/ingestion/virtual_index.py`
+
+#### Virtual Index Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openspec.io/schemas/virtual_index.schema.json",
+  
+  "type": "object",
+  "required": ["index_id", "source_type", "tiles", "spatial_index"],
+  "properties": {
+    "index_id": {
+      "type": "string",
+      "description": "Unique index identifier"
+    },
+    
+    "source_type": {
+      "type": "string",
+      "enum": ["vrt", "stac_virtual", "mosaic_json"],
+      "description": "Type of virtual index"
+    },
+    
+    "tiles": {
+      "type": "array",
+      "description": "Tile metadata for spatial index",
+      "items": {
+        "type": "object",
+        "required": ["tile_id", "url", "bbox", "resolution_m"],
+        "properties": {
+          "tile_id": {"type": "string"},
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTP(S) URL to COG tile with byte range support"
+          },
+          "bbox": {"$ref": "common.schema.json#/$defs/bbox"},
+          "resolution_m": {"type": "number", "minimum": 0},
+          "bands": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "temporal": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "crs": {"$ref": "common.schema.json#/$defs/crs"},
+          "size_bytes": {
+            "type": "integer",
+            "description": "Uncompressed tile size for memory planning"
+          }
+        }
+      }
+    },
+    
+    "spatial_index": {
+      "type": "object",
+      "description": "R-tree spatial index for fast AOI queries",
+      "properties": {
+        "type": {"type": "string", "enum": ["rtree", "quadtree"]},
+        "index_file": {
+          "type": "string",
+          "description": "Path to serialized spatial index"
+        }
+      }
+    },
+    
+    "vrt_path": {
+      "type": "string",
+      "description": "Path to GDAL VRT file if source_type=vrt"
+    },
+    
+    "statistics": {
+      "type": "object",
+      "properties": {
+        "total_tiles": {"type": "integer"},
+        "total_coverage_km2": {"type": "number"},
+        "index_size_mb": {"type": "number"},
+        "estimated_data_size_gb": {"type": "number"}
+      }
+    }
+  }
+}
+```
+
+#### Virtual Index Implementation
+
+```python
+# core/data/ingestion/virtual_index.py
+
+from typing import List, Dict
+from dataclasses import dataclass
+import rasterio
+from rasterio.vrt import WarpedVRT
+from shapely.geometry import box
+from rtree import index as rtree_index
+
+@dataclass
+class TileReference:
+    """Metadata for a single raster tile without loading data."""
+    tile_id: str
+    url: str  # HTTP(S) URL to COG
+    bbox: tuple  # (minx, miny, maxx, maxy)
+    resolution_m: float
+    bands: List[str]
+    temporal: str  # ISO timestamp
+    crs: str
+    size_bytes: int
+
+class VirtualRasterIndex:
+    """
+    Build and query virtual raster index from STAC catalog results.
+    Never downloads actual raster data—only metadata.
+    """
+    
+    def __init__(self):
+        self.tiles: List[TileReference] = []
+        self.spatial_index = rtree_index.Index()
+        
+    def add_from_stac_items(self, stac_items: List[Dict]) -> None:
+        """
+        Parse STAC items and build tile references.
+        Uses STAC asset URLs with /vsicurl/ for remote access.
+        """
+        for item in stac_items:
+            for asset_key, asset in item['assets'].items():
+                if asset['type'] in ['image/tiff', 'image/vnd.stac.geotiff', 'application/x-geotiff']:
+                    tile = self._parse_stac_asset(item, asset_key, asset)
+                    self.tiles.append(tile)
+                    
+                    # Add to R-tree spatial index
+                    idx = len(self.tiles) - 1
+                    self.spatial_index.insert(idx, tile.bbox)
+    
+    def query_aoi(self, aoi_bbox: tuple) -> List[TileReference]:
+        """
+        Fast spatial query using R-tree index.
+        Returns only tiles intersecting AOI.
+        """
+        intersecting_indices = list(self.spatial_index.intersection(aoi_bbox))
+        return [self.tiles[i] for i in intersecting_indices]
+    
+    def build_vrt(self, output_path: str, aoi_bbox: tuple = None) -> str:
+        """
+        Create GDAL VRT file from tile references.
+        VRT uses /vsicurl/ for HTTP range request streaming.
+        """
+        tiles_to_include = self.query_aoi(aoi_bbox) if aoi_bbox else self.tiles
+        
+        vrt_options = {
+            'resolution': 'highest',
+            'resampling': rasterio.enums.Resampling.bilinear
+        }
+        
+        # Build VRT XML referencing remote COGs
+        # GDAL will stream only needed blocks via HTTP range requests
+        # ...implementation details...
+        
+        return output_path
+    
+    def estimate_memory_requirements(self, aoi_bbox: tuple, tile_size_px: int = 256) -> Dict:
+        """
+        Estimate memory needed for processing AOI with given tile size.
+        """
+        tiles = self.query_aoi(aoi_bbox)
+        total_pixels = sum(self._calculate_pixels(t, aoi_bbox) for t in tiles)
+        
+        # Assume float32 per band, 3 bands typical
+        bytes_per_pixel = 4 * 3
+        peak_memory_gb = (tile_size_px ** 2) * bytes_per_pixel / (1024**3)
+        
+        return {
+            'tiles_needed': len(tiles),
+            'total_pixels_million': total_pixels / 1e6,
+            'peak_memory_gb': peak_memory_gb,
+            'recommended_workers': min(len(tiles), os.cpu_count())
+        }
+```
+
+### Component 2: Execution Router
+
+**Purpose:** Intelligently route processing to appropriate execution backend
+
+**Location:** `core/analysis/execution/router.py`
+
+#### Execution Profile Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openspec.io/schemas/execution_profile.schema.json",
+  
+  "type": "object",
+  "required": ["profile_id", "resource_limits", "backend"],
+  "properties": {
+    "profile_id": {
+      "type": "string",
+      "enum": ["laptop", "workstation", "edge", "cloud_dask", "cloud_sedona"]
+    },
+    
+    "resource_limits": {
+      "type": "object",
+      "properties": {
+        "max_memory_gb": {"type": "number", "minimum": 0},
+        "max_workers": {"type": "integer", "minimum": 1},
+        "max_tiles_parallel": {"type": "integer", "minimum": 1},
+        "tile_size_px": {"type": "integer", "enum": [256, 512, 1024]},
+        "enable_distributed": {"type": "boolean"}
+      }
+    },
+    
+    "backend": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["serial", "dask_local", "dask_distributed", "sedona_spark"]
+        },
+        
+        "dask_config": {
+          "type": "object",
+          "properties": {
+            "scheduler_address": {"type": "string"},
+            "n_workers": {"type": "integer"},
+            "threads_per_worker": {"type": "integer"},
+            "memory_limit": {"type": "string"}
+          }
+        },
+        
+        "sedona_config": {
+          "type": "object",
+          "properties": {
+            "spark_master": {"type": "string"},
+            "executor_memory": {"type": "string"},
+            "executor_instances": {"type": "integer"},
+            "spatial_partitioning": {
+              "type": "string",
+              "enum": ["quadtree", "kdbtree", "voronoi"]
+            }
+          }
+        }
+      }
+    },
+    
+    "routing_rules": {
+      "type": "object",
+      "description": "Rules for auto-selecting backend based on job characteristics",
+      "properties": {
+        "tile_count_thresholds": {
+          "type": "object",
+          "properties": {
+            "serial_max": {"type": "integer", "default": 100},
+            "dask_local_max": {"type": "integer", "default": 1000},
+            "dask_distributed_max": {"type": "integer", "default": 10000}
+          }
+        },
+        
+        "memory_thresholds": {
+          "type": "object",
+          "properties": {
+            "peak_memory_trigger_gb": {
+              "type": "number",
+              "description": "Switch to distributed if peak > this"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Execution Router Implementation
+
+```python
+# core/analysis/execution/router.py
+
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
+
+class ExecutionBackend(Enum):
+    SERIAL = "serial"
+    DASK_LOCAL = "dask_local"
+    DASK_DISTRIBUTED = "dask_distributed"
+    SEDONA_SPARK = "sedona_spark"
+
+@dataclass
+class ExecutionContext:
+    """Context for execution routing decision."""
+    tile_count: int
+    estimated_memory_gb: float
+    aoi_size_km2: float
+    algorithm_complexity: str  # "simple", "medium", "complex"
+    available_resources: Dict[str, Any]
+    cluster_available: bool
+
+class ExecutionRouter:
+    """
+    Routes execution to appropriate backend based on job characteristics.
+    Provides transparent scaling from laptop to cloud.
+    """
+    
+    def __init__(self, default_profile: str = "laptop"):
+        self.profiles = self._load_profiles()
+        self.default_profile = default_profile
+        
+    def route(self, context: ExecutionContext, force_backend: Optional[ExecutionBackend] = None) -> ExecutionBackend:
+        """
+        Decide which execution backend to use.
+        
+        Decision logic:
+        1. If force_backend specified, use it (with validation)
+        2. Apply routing rules based on:
+           - Tile count (serial < 100, dask_local < 1000, distributed >= 1000)
+           - Memory requirements (if > available, need distributed)
+           - Cluster availability (if Spark cluster accessible, prefer for large jobs)
+           - Algorithm complexity (ML models benefit from distributed)
+        """
+        if force_backend:
+            if self._validate_backend_available(force_backend, context):
+                return force_backend
+            else:
+                raise ValueError(f"Backend {force_backend} not available or unsuitable")
+        
+        # Auto-routing logic
+        if context.tile_count < 100:
+            return ExecutionBackend.SERIAL
+        
+        elif context.tile_count < 1000:
+            if context.estimated_memory_gb <= context.available_resources.get('memory_gb', 4):
+                return ExecutionBackend.DASK_LOCAL
+            else:
+                return ExecutionBackend.DASK_DISTRIBUTED if context.cluster_available else ExecutionBackend.DASK_LOCAL
+        
+        else:  # >= 1000 tiles
+            if context.cluster_available:
+                # Prefer Sedona for very large raster jobs on Spark
+                if context.tile_count > 5000:
+                    return ExecutionBackend.SEDONA_SPARK
+                else:
+                    return ExecutionBackend.DASK_DISTRIBUTED
+            else:
+                # Fallback to dask local with chunking
+                return ExecutionBackend.DASK_LOCAL
+    
+    def get_executor(self, backend: ExecutionBackend) -> 'BaseExecutor':
+        """Factory method to instantiate appropriate executor."""
+        if backend == ExecutionBackend.SERIAL:
+            from core.analysis.execution.runner import SerialExecutor
+            return SerialExecutor()
+        
+        elif backend == ExecutionBackend.DASK_LOCAL:
+            from core.analysis.execution.dask_tiled import DaskLocalExecutor
+            return DaskLocalExecutor()
+        
+        elif backend == ExecutionBackend.DASK_DISTRIBUTED:
+            from core.analysis.execution.dask_tiled import DaskDistributedExecutor
+            return DaskDistributedExecutor()
+        
+        elif backend == ExecutionBackend.SEDONA_SPARK:
+            from core.analysis.execution.sedona_backend import SedonaExecutor
+            return SedonaExecutor()
+```
+
+### Component 3: Dask Parallelization
+
+**Purpose:** Multi-core parallelization on laptop/workstation using Dask
+
+**Location:** `core/analysis/execution/dask_tiled.py`
+
+#### Dask Tiled Executor
+
+```python
+# core/analysis/execution/dask_tiled.py
+
+import dask
+import dask.array as da
+from dask.distributed import Client, LocalCluster
+import rasterio
+from rasterio.windows import Window
+import numpy as np
+
+class DaskLocalExecutor:
+    """
+    Execute algorithms using Dask on local machine.
+    Parallelizes tile processing across CPU cores.
+    """
+    
+    def __init__(self, n_workers: Optional[int] = None):
+        self.n_workers = n_workers or os.cpu_count()
+        self.client = None
+        
+    def execute_algorithm(self, algorithm, virtual_index: VirtualRasterIndex, aoi_bbox: tuple, **params):
+        """
+        Execute algorithm on AOI using Dask parallelization.
+        
+        Workflow:
+        1. Query virtual index for tiles intersecting AOI
+        2. Create Dask delayed tasks for each tile
+        3. Execute in parallel across workers
+        4. Stitch results into final mosaic
+        """
+        
+        # Get tiles for AOI
+        tiles = virtual_index.query_aoi(aoi_bbox)
+        
+        # Create delayed tasks
+        delayed_results = []
+        for tile in tiles:
+            # Create delayed task that reads tile via HTTP range request
+            delayed_task = dask.delayed(self._process_single_tile)(
+                algorithm=algorithm,
+                tile_url=tile.url,
+                tile_bbox=tile.bbox,
+                aoi_bbox=aoi_bbox,
+                params=params
+            )
+            delayed_results.append(delayed_task)
+        
+        # Execute in parallel
+        with LocalCluster(n_workers=self.n_workers, threads_per_worker=1) as cluster:
+            with Client(cluster) as client:
+                results = dask.compute(*delayed_results)
+        
+        # Stitch results
+        final_result = self._stitch_results(results, aoi_bbox)
+        return final_result
+    
+    @staticmethod
+    def _process_single_tile(algorithm, tile_url: str, tile_bbox: tuple, aoi_bbox: tuple, params: Dict):
+        """
+        Process a single tile with HTTP range request streaming.
+        
+        Uses rasterio's /vsicurl/ to read only needed pixels via HTTP range requests.
+        Never downloads full tile.
+        """
+        # Calculate window for AOI intersection
+        window = calculate_intersection_window(tile_bbox, aoi_bbox)
+        
+        # Stream tile data via HTTP range request
+        with rasterio.open(f'/vsicurl/{tile_url}') as src:
+            # Read only the window we need
+            data = src.read(window=window)
+            
+            # Execute algorithm on this tile
+            result = algorithm.process_tile(data, **params)
+            
+        return {
+            'bbox': window_to_bbox(window, tile_bbox),
+            'data': result,
+            'tile_id': tile_url
+        }
+    
+    def _stitch_results(self, results: List[Dict], aoi_bbox: tuple) -> np.ndarray:
+        """Combine tile results into final mosaic."""
+        # Use Dask for efficient stitching
+        # Handle overlaps, blending, etc.
+        pass
+```
+
+### Component 4: Apache Sedona Integration
+
+**Purpose:** Spark-based distributed processing for continental-scale analyses
+
+**Location:** `core/analysis/execution/sedona_backend.py`
+
+#### Sedona Executor
+
+```python
+# core/analysis/execution/sedona_backend.py
+
+from pyspark.sql import SparkSession
+from sedona.spark import *
+from sedona.core.spatialOperator import RangeQuery
+from sedona.core.enums import GridType, IndexType
+import geopandas as gpd
+
+class SedonaExecutor:
+    """
+    Execute algorithms using Apache Sedona on Spark cluster.
+    Handles massive-scale raster processing (100,000+ km²).
+    """
+    
+    def __init__(self, spark_master: str = "local[*]"):
+        self.spark = self._init_spark_session(spark_master)
+        SedonaRegistrator.registerAll(self.spark)
+        
+    def _init_spark_session(self, master: str) -> SparkSession:
+        """Initialize Spark session with Sedona extensions."""
+        return SparkSession.builder \
+            .master(master) \
+            .appName("MultiverseDive-Sedona") \
+            .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator") \
+            .config("spark.sql.adaptive.enabled", "true") \
+            .config("spark.executor.memory", "4g") \
+            .config("spark.executor.cores", "2") \
+            .getOrCreate()
+    
+    def execute_algorithm(self, algorithm, stac_items: List[Dict], aoi_wkt: str, **params):
+        """
+        Execute algorithm using Sedona's distributed raster processing.
+        
+        Workflow:
+        1. Load STAC items as Sedona RasterRDD
+        2. Apply spatial partitioning (quadtree)
+        3. Distribute algorithm execution across Spark workers
+        4. Use Sedona's map algebra for raster operations
+        5. Collect results
+        """
+        
+        # Create Sedona RasterRDD from STAC items
+        raster_rdd = self._create_raster_rdd(stac_items)
+        
+        # Apply spatial partitioning for efficient distributed processing
+        raster_rdd.spatialPartitioning(GridType.QUADTREE)
+        raster_rdd.buildIndex(IndexType.RTREE, True)
+        
+        # Perform spatial query to filter to AOI
+        from shapely.wkt import loads as wkt_loads
+        aoi_geom = wkt_loads(aoi_wkt)
+        filtered_rdd = RangeQuery.SpatialRangeQuery(raster_rdd, aoi_geom, True, True)
+        
+        # Apply algorithm using Sedona's map algebra
+        if algorithm.name == 'ndwi_optical':
+            result_rdd = self._compute_ndwi_sedona(filtered_rdd, params)
+        elif algorithm.name == 'threshold_sar':
+            result_rdd = self._compute_sar_threshold_sedona(filtered_rdd, params)
+        else:
+            # Generic algorithm execution
+            result_rdd = filtered_rdd.map(lambda tile: algorithm.process_tile(tile.raster_data, **params))
+        
+        # Collect and mosaic results
+        final_result = self._mosaic_raster_rdd(result_rdd)
+        return final_result
+    
+    def _compute_ndwi_sedona(self, raster_rdd, params: Dict):
+        """
+        NDWI calculation using Sedona's map algebra.
+        
+        NDWI = (Green - NIR) / (Green + NIR)
+        """
+        from sedona.raster import MapAlgebra
+        
+        # Extract green and NIR bands
+        green_rdd = raster_rdd.map(lambda r: r.getBand(params.get('green_band', 3)))
+        nir_rdd = raster_rdd.map(lambda r: r.getBand(params.get('nir_band', 8)))
+        
+        # Compute NDWI using Sedona map algebra
+        ndwi_rdd = MapAlgebra.apply_algebra(
+            green_rdd, 
+            nir_rdd,
+            lambda g, n: (g - n) / (g + n + 1e-10)
+        )
+        
+        return ndwi_rdd
+```
+
+### Component 5: Algorithm Adapters
+
+**Purpose:** Add distributed processing support to existing baseline algorithms
+
+**Location:** Update existing algorithm files
+
+#### Algorithm Interface Extension
+
+```python
+# core/analysis/library/baseline/flood/ndwi_optical.py
+
+class NDWIOpticalFloodDetection:
+    """
+    NDWI-based flood detection with distributed processing support.
+    """
+    
+    # Existing serial implementation
+    def process(self, green: np.ndarray, nir: np.ndarray, **params) -> Dict:
+        """Original serial implementation - unchanged."""
+        pass
+    
+    # NEW: Dask-aware tile processing
+    def process_tile(self, data: np.ndarray, **params) -> np.ndarray:
+        """
+        Process single tile for Dask parallelization.
+        
+        Args:
+            data: 3D array (bands, height, width) for single tile
+            
+        Returns:
+            2D array: NDWI values for this tile
+        """
+        green_idx = params.get('green_band_idx', 1)
+        nir_idx = params.get('nir_band_idx', 3)
+        
+        green = data[green_idx, :, :]
+        nir = data[nir_idx, :, :]
+        
+        # NDWI calculation
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ndwi = (green - nir) / (green + nir + 1e-10)
+        
+        return ndwi
+    
+    # NEW: Sedona map algebra support
+    @staticmethod
+    def sedona_map_algebra(green_band, nir_band):
+        """
+        Sedona-compatible map algebra expression for NDWI.
+        
+        Used by SedonaExecutor for distributed raster processing.
+        """
+        return "(B1 - B2) / (B1 + B2 + 0.0000000001)"
+```
+
+### Deployment Configuration
+
+#### Execution Profiles
+
+```yaml
+# config/execution_profiles.yaml
+
+profiles:
+  laptop:
+    resource_limits:
+      max_memory_gb: 4
+      max_workers: 4
+      max_tiles_parallel: 50
+      tile_size_px: 256
+    backend:
+      type: "dask_local"
+      dask_config:
+        n_workers: 4
+        threads_per_worker: 1
+        memory_limit: "1GB"
+    routing_rules:
+      tile_count_thresholds:
+        serial_max: 50
+        dask_local_max: 500
+  
+  workstation:
+    resource_limits:
+      max_memory_gb: 16
+      max_workers: 8
+      max_tiles_parallel: 200
+      tile_size_px: 512
+    backend:
+      type: "dask_local"
+      dask_config:
+        n_workers: 8
+        threads_per_worker: 2
+        memory_limit: "2GB"
+    routing_rules:
+      tile_count_thresholds:
+        serial_max: 100
+        dask_local_max: 1000
+  
+  cloud_dask:
+    resource_limits:
+      max_memory_gb: 128
+      max_workers: 32
+      enable_distributed: true
+    backend:
+      type: "dask_distributed"
+      dask_config:
+        scheduler_address: "tcp://dask-scheduler:8786"
+        n_workers: 32
+        threads_per_worker: 2
+        memory_limit: "4GB"
+  
+  cloud_sedona:
+    resource_limits:
+      max_memory_gb: 512
+      enable_distributed: true
+    backend:
+      type: "sedona_spark"
+      sedona_config:
+        spark_master: "spark://spark-master:7077"
+        executor_memory: "8g"
+        executor_instances: 64
+        spatial_partitioning: "quadtree"
+        raster_partitions: 256
+```
+
+### Testing Strategy
+
+#### Unit Tests
+
+```python
+# tests/test_distributed_execution.py
+
+import pytest
+from core.analysis.execution.router import ExecutionRouter, ExecutionContext, ExecutionBackend
+from core.data.ingestion.virtual_index import VirtualRasterIndex
+
+def test_router_selects_serial_for_small_job():
+    """Router should select serial execution for < 100 tiles."""
+    router = ExecutionRouter()
+    context = ExecutionContext(
+        tile_count=50,
+        estimated_memory_gb=2.0,
+        aoi_size_km2=100,
+        algorithm_complexity="simple",
+        available_resources={'memory_gb': 4, 'cpu_cores': 4},
+        cluster_available=False
+    )
+    
+    backend = router.route(context)
+    assert backend == ExecutionBackend.SERIAL
+
+def test_router_selects_dask_local_for_medium_job():
+    """Router should select Dask local for 100-1000 tiles."""
+    router = ExecutionRouter()
+    context = ExecutionContext(
+        tile_count=500,
+        estimated_memory_gb=3.5,
+        aoi_size_km2=1000,
+        algorithm_complexity="medium",
+        available_resources={'memory_gb': 16, 'cpu_cores': 8},
+        cluster_available=False
+    )
+    
+    backend = router.route(context)
+    assert backend == ExecutionBackend.DASK_LOCAL
+
+def test_virtual_index_builds_from_stac():
+    """Virtual index should parse STAC items without downloading."""
+    index = VirtualRasterIndex()
+    
+    stac_items = load_fixture('stac_sentinel2_items.json')
+    index.add_from_stac_items(stac_items)
+    
+    assert len(index.tiles) == 30
+    assert index.spatial_index.get_bounds() is not None
+
+def test_virtual_index_aoi_query():
+    """Virtual index should quickly query tiles for AOI."""
+    index = VirtualRasterIndex()
+    index.add_from_stac_items(load_fixture('stac_items.json'))
+    
+    aoi_bbox = (-80.5, 25.5, -80.0, 26.0)  # Miami
+    tiles = index.query_aoi(aoi_bbox)
+    
+    assert len(tiles) > 0
+    assert all(bbox_intersects(t.bbox, aoi_bbox) for t in tiles)
+
+def test_dask_executor_parallelizes():
+    """Dask executor should use multiple workers."""
+    from core.analysis.execution.dask_tiled import DaskLocalExecutor
+    
+    executor = DaskLocalExecutor(n_workers=4)
+    # Test execution with mock algorithm
+    # Verify worker utilization
+    pass
+```
+
+#### Integration Tests
+
+```python
+# tests/test_distributed_integration.py
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_end_to_end_dask_execution():
+    """
+    Full end-to-end test: STAC discovery → VRT → Dask execution → Result.
+    """
+    # 1. Discover data via STAC
+    from core.data.broker import DataBroker
+    broker = DataBroker()
+    discovery_results = broker.discover(
+        spatial_bbox=(-80.5, 25.5, -80.0, 26.0),
+        temporal=('2024-09-15', '2024-09-20'),
+        event_class='flood.coastal'
+    )
+    
+    # 2. Build virtual index
+    from core.data.ingestion.virtual_index import VirtualRasterIndex
+    vindex = VirtualRasterIndex()
+    vindex.add_from_discovery_results(discovery_results)
+    
+    # 3. Route execution
+    from core.analysis.execution.router import ExecutionRouter, ExecutionContext
+    router = ExecutionRouter(default_profile='workstation')
+    context = ExecutionContext(
+        tile_count=len(vindex.tiles),
+        estimated_memory_gb=vindex.estimate_memory_requirements(aoi_bbox)['peak_memory_gb'],
+        aoi_size_km2=100,
+        algorithm_complexity='simple',
+        available_resources={'memory_gb': 16, 'cpu_cores': 8},
+        cluster_available=False
+    )
+    backend = router.route(context)
+    executor = router.get_executor(backend)
+    
+    # 4. Execute algorithm
+    from core.analysis.library.baseline.flood.ndwi_optical import NDWIOpticalFloodDetection
+    algorithm = NDWIOpticalFloodDetection()
+    result = executor.execute_algorithm(
+        algorithm=algorithm,
+        virtual_index=vindex,
+        aoi_bbox=(-80.5, 25.5, -80.0, 26.0),
+        threshold=0.3
+    )
+    
+    # 5. Verify result
+    assert result is not None
+    assert result.shape[0] > 0
+    assert 0 <= result.max() <= 1.0  # NDWI range check
+
+@pytest.mark.integration
+@pytest.mark.requires_spark
+def test_sedona_execution():
+    """Test Apache Sedona execution on Spark cluster."""
+    # Requires Spark cluster running
+    pytest.skip("Requires Spark cluster")
+    # Full Sedona test implementation
+    pass
+```
+
+### Performance Targets
+
+| Metric | Current (Serial) | Target (Dask Local) | Target (Sedona) |
+|--------|------------------|---------------------|-----------------|
+| 100km² Sentinel-2 | 20-30 min | <5 min | <2 min |
+| 1000km² Sentinel-2 | 3-5 hours | 30-45 min | <10 min |
+| 10,000km² (state) | Not feasible | 5-8 hours | <1 hour |
+| 100,000km² (region) | Not feasible | Not feasible | <4 hours |
+| Memory (laptop) | 2-6GB peak | <4GB peak | N/A |
+| CPU utilization | 12-25% | 80-95% | N/A |
+| Download size (100km²) | 2-5GB | <100MB | <100MB |
+
+### Migration Path
+
+**Phase 1: Virtual Index & Dask Local** (Weeks 1-3)
+- Implement VirtualRasterIndex
+- Implement ExecutionRouter
+- Implement DaskLocalExecutor
+- Add process_tile() to baseline algorithms
+- Integration tests
+
+**Phase 2: Apache Sedona** (Weeks 4-7)  
+- Implement SedonaExecutor
+- Port algorithms to Sedona map algebra
+- Spark cluster deployment configs
+- Performance benchmarking
+
+**Phase 3: Optimization** (Weeks 8-9)
+- Profile and optimize tile sizes
+- Implement adaptive chunking
+- Add caching layer for frequently accessed tiles
+- Cost optimization for cloud execution
+
+---
+
+**Last Updated:** 2026-01-11
+**Implementation Status:** Specification phase
+**Next Steps:** Begin Phase 1 implementation after P0 bug fixes complete
