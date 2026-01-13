@@ -1,0 +1,157 @@
+# Image Validation Configuration
+# ================================
+# This file configures production image validation for the multiverse_dive platform.
+# See docs/PRODUCTION_IMAGE_VALIDATION_REQUIREMENTS.md for full specification.
+
+validation:
+  # Master switch - set to false to disable all validation
+  enabled: true
+
+  # Optical imagery settings
+  optical:
+    # Required bands (generic names) - validation will fail if these are missing
+    required_bands:
+      - blue
+      - green
+      - red
+      - nir
+
+    # Optional bands - will warn if missing but not fail validation
+    optional_bands:
+      - swir1
+      - swir2
+      - coastal
+      - red_edge
+
+    # Validation thresholds
+    thresholds:
+      # Minimum standard deviation for band to be considered non-blank
+      std_dev_min: 1.0
+
+      # Minimum ratio of non-zero pixels (0.0-1.0)
+      non_zero_ratio_min: 0.05
+
+      # Maximum NoData ratio (warning only if exceeded)
+      nodata_ratio_max: 0.95
+
+      # Valid value ranges by data type
+      value_range_uint16: [0, 10000]
+      value_range_float32: [0.0, 1.0]
+
+      # Resolution tolerance for expected vs actual resolution (0.1 = 10%)
+      resolution_tolerance: 0.1
+
+  # SAR imagery settings
+  sar:
+    # Required polarizations - at least one must be present
+    required_polarizations:
+      - VV
+
+    # Optional polarizations
+    optional_polarizations:
+      - VH
+      - HH
+      - HV
+
+    # SAR-specific thresholds (values in dB)
+    thresholds:
+      # Minimum standard deviation in dB (higher than optical due to speckle)
+      std_dev_min_db: 2.0
+
+      # Valid backscatter range in dB
+      backscatter_range_db: [-50, 20]
+
+      # Extreme value thresholds (typical land/water range)
+      extreme_value_threshold_db: [-30, 10]
+
+      # Maximum ratio of extreme values before warning
+      extreme_value_ratio_max: 0.5
+
+  # Screenshot capture settings (for debugging and audit trails)
+  screenshots:
+    # Enable screenshot capture
+    # - false: Production default (no screenshots)
+    # - true: Staging/dev (captures screenshots)
+    enabled: false
+
+    # Output directory for screenshots (supports ~ expansion)
+    output_dir: "~/.multiverse_dive/screenshots"
+
+    # Image format (png recommended)
+    format: "png"
+
+    # Screenshot resolution (width, height)
+    resolution: [1200, 800]
+
+    # Bands to render in screenshots
+    bands_to_render:
+      - rgb_composite
+      - nir
+      - swir1
+
+    # Overlay metadata on screenshots
+    metadata_overlay: true
+
+    # Only capture screenshots for failed validations
+    on_failure_only: false
+
+    # Retention policy: 'temporary' (delete after validation) or 'permanent'
+    retention: "temporary"
+
+  # Performance tuning
+  performance:
+    # Maximum validation time before timeout (seconds)
+    max_validation_time_seconds: 30
+
+    # Sample ratio for large images (1.0 = all pixels, 0.3 = 30% of pixels)
+    # Applied when image exceeds sample_threshold_pixels
+    sample_ratio: 0.3
+
+    # Threshold above which sampling is used (pixels)
+    sample_threshold_pixels: 25000000  # 5000x5000
+
+    # Validate bands in parallel (when possible)
+    parallel_bands: true
+
+    # Maximum memory for validation (MB)
+    max_memory_mb: 500
+
+  # Validation actions/behaviors
+  actions:
+    # Reject image if any required band is blank
+    reject_on_blank_band: true
+
+    # Reject image if required bands are missing
+    reject_on_missing_required_band: true
+
+    # Reject image if CRS is invalid or missing
+    reject_on_invalid_crs: true
+
+    # Warn (but continue) if NoData ratio exceeds threshold
+    warn_on_high_nodata: true
+
+    # Warn (but continue) if optional bands are missing
+    warn_on_missing_optional_band: true
+
+    # Delete invalid raster files after validation failure
+    cleanup_invalid_files: false
+
+    # Maximum retries for file loading errors
+    max_load_retries: 3
+
+  # Alerting configuration
+  alerts:
+    # Enable alerting
+    enabled: true
+
+    # Alert if validation process is hung (seconds)
+    hung_process_timeout_seconds: 60
+
+    # Alert if validation failure rate exceeds threshold (0.0-1.0)
+    failure_rate_threshold: 0.1
+
+# Environment variable overrides:
+# - MULTIVERSE_VALIDATION_ENABLED: Override enabled setting
+# - MULTIVERSE_VALIDATION_SCREENSHOT_DIR: Override screenshot output directory
+# - MULTIVERSE_VALIDATION_SAMPLE_RATIO: Override sample ratio
+# - MULTIVERSE_VALIDATION_MAX_TIME: Override max validation time

@@ -143,6 +143,108 @@ from .tiled_runner import (
     estimate_tiles_for_memory,
 )
 
+# Dask-based tiled processing (Stream B: Distributed Processing)
+from .dask_tiled import (
+    # Configuration
+    DaskProcessingConfig,
+    # Data classes
+    TileInfo,
+    TileResult as DaskTileResult,
+    ProcessingProgress as DaskProcessingProgress,
+    DaskProcessingResult,
+    # Processor
+    DaskTileProcessor,
+    # Utilities
+    process_with_dask,
+    estimate_processing_time,
+    get_optimal_config,
+)
+
+# Execution Router (Stream B: Distributed Processing)
+from .router import (
+    # Enums
+    ExecutionProfile,
+    ResourceLevel,
+    # Data classes
+    ResourceEstimate,
+    SystemResources,
+    RoutingConfig,
+    RoutingResult,
+    # Components
+    ResourceEstimator,
+    BackendSelector,
+    ExecutionRouter,
+    # Utilities
+    auto_route,
+    get_recommended_profile,
+    create_router_for_profile,
+)
+
+# Algorithm Dask Adapters (Stream B: Distributed Processing)
+from .dask_adapters import (
+    # Data classes
+    TileContext as AdapterTileContext,
+    TileResult as AdapterTileResult,
+    # Adapters
+    DaskAlgorithmAdapter,
+    TiledAlgorithmMixin,
+    AlgorithmWrapper,
+    FloodAlgorithmAdapter,
+    WildfireAlgorithmAdapter,
+    StormAlgorithmAdapter,
+    # Factory functions
+    wrap_algorithm_for_dask,
+    create_tiled_algorithm,
+    adapt_all_algorithms,
+    # Validation
+    check_algorithm_compatibility,
+    validate_adapter,
+)
+
+# Sedona Backend (Group C: Distributed Processing - Cloud)
+from .sedona_backend import (
+    # Enums
+    SedonaDeployMode,
+    PartitionStrategy,
+    CheckpointMode,
+    RasterFormat,
+    # Configuration
+    SedonaConfig,
+    # Data classes
+    ClusterStatus,
+    TilePartition,
+    SedonaProcessingResult,
+    # Backend
+    SedonaBackend,
+    SedonaTileProcessor,
+    RasterSerializer,
+    # Utilities
+    create_sedona_backend,
+    process_with_sedona,
+    is_sedona_available,
+    get_sedona_info,
+)
+
+# Sedona Adapters (Group C: Distributed Processing - Cloud)
+from .sedona_adapters import (
+    # Configuration
+    AdapterConfig,
+    TileData as SedonaTileData,
+    TileResult as SedonaTileResult,
+    # Adapters
+    SedonaAlgorithmAdapter,
+    FloodSedonaAdapter,
+    WildfireSedonaAdapter,
+    StormSedonaAdapter,
+    AlgorithmSerializer,
+    ResultCollector,
+    # Factory functions
+    wrap_algorithm_for_sedona,
+    adapt_algorithms_for_sedona,
+    check_sedona_compatibility,
+    validate_sedona_adapter,
+)
+
 __all__ = [
     # Runner - Enums
     "TaskStatus",
@@ -203,4 +305,85 @@ __all__ = [
     "check_algorithm_tiled_support",
     "run_algorithm_tiled",
     "estimate_tiles_for_memory",
+    # Dask Tiled Processing - Config
+    "DaskProcessingConfig",
+    # Dask Tiled Processing - Data
+    "TileInfo",
+    "DaskTileResult",
+    "DaskProcessingProgress",
+    "DaskProcessingResult",
+    # Dask Tiled Processing - Processor
+    "DaskTileProcessor",
+    # Dask Tiled Processing - Utilities
+    "process_with_dask",
+    "estimate_processing_time",
+    "get_optimal_config",
+    # Execution Router - Enums
+    "ExecutionProfile",
+    "ResourceLevel",
+    # Execution Router - Data
+    "ResourceEstimate",
+    "SystemResources",
+    "RoutingConfig",
+    "RoutingResult",
+    # Execution Router - Components
+    "ResourceEstimator",
+    "BackendSelector",
+    "ExecutionRouter",
+    # Execution Router - Utilities
+    "auto_route",
+    "get_recommended_profile",
+    "create_router_for_profile",
+    # Dask Adapters - Data
+    "AdapterTileContext",
+    "AdapterTileResult",
+    # Dask Adapters - Classes
+    "DaskAlgorithmAdapter",
+    "TiledAlgorithmMixin",
+    "AlgorithmWrapper",
+    "FloodAlgorithmAdapter",
+    "WildfireAlgorithmAdapter",
+    "StormAlgorithmAdapter",
+    # Dask Adapters - Factory
+    "wrap_algorithm_for_dask",
+    "create_tiled_algorithm",
+    "adapt_all_algorithms",
+    # Dask Adapters - Validation
+    "check_algorithm_compatibility",
+    "validate_adapter",
+    # Sedona Backend - Config
+    "SedonaConfig",
+    "SedonaDeployMode",
+    "PartitionStrategy",
+    "CheckpointMode",
+    "RasterFormat",
+    # Sedona Backend - Data
+    "ClusterStatus",
+    "TilePartition",
+    "SedonaProcessingResult",
+    # Sedona Backend - Classes
+    "SedonaBackend",
+    "SedonaTileProcessor",
+    "RasterSerializer",
+    # Sedona Backend - Utilities
+    "create_sedona_backend",
+    "process_with_sedona",
+    "is_sedona_available",
+    "get_sedona_info",
+    # Sedona Adapters - Config
+    "AdapterConfig",
+    "SedonaTileData",
+    "SedonaTileResult",
+    # Sedona Adapters - Classes
+    "SedonaAlgorithmAdapter",
+    "FloodSedonaAdapter",
+    "WildfireSedonaAdapter",
+    "StormSedonaAdapter",
+    "AlgorithmSerializer",
+    "ResultCollector",
+    # Sedona Adapters - Factory
+    "wrap_algorithm_for_sedona",
+    "adapt_algorithms_for_sedona",
+    "check_sedona_compatibility",
+    "validate_sedona_adapter",
 ]

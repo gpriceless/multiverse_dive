@@ -432,6 +432,58 @@ class TiledAlgorithmRunner:
         self._lock = threading.Lock()
         self._cancelled = threading.Event()
 
+        # Image validation (lazy-loaded)
+        self._validator = None
+        self._validation_enabled = True
+
+    @property
+    def validator(self):
+        """Lazy-load image validator."""
+        if self._validator is None and self._validation_enabled:
+            try:
+                from core.data.ingestion.validation import ImageValidator
+                self._validator = ImageValidator()
+            except ImportError:
+                logger.warning("Image validation module not available for tiled runner")
+                self._validation_enabled = False
+        return self._validator
+
+    def validate_input(
+        self,
+        raster_path: Union[str, Path],
+        data_source_spec: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Validate input raster before tiled processing.
+
+        Args:
+            raster_path: Path to raster file
+            data_source_spec: Optional data source specification
+
+        Returns:
+            ImageValidationResult or None if validation disabled
+
+        Raises:
+            ImageValidationError: If validation fails and rejection is configured
+        """
+        if not self._validation_enabled or self.validator is None:
+            return None
+
+        from core.data.ingestion.validation import ImageValidationError
+
+        validation_result = self.validator.validate(
+            raster_path=raster_path,
+            data_source_spec=data_source_spec,
+        )
+
+        if not validation_result.is_valid:
+            raise ImageValidationError(
+                f"Image validation failed: {validation_result.errors}",
+                {"validation_result": validation_result.to_dict()},
+            )
+
+        return validation_result
+
     @classmethod
     def wrap_algorithm(
         cls,

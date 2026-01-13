@@ -2,73 +2,59 @@
 
 Geospatial event intelligence platform that converts (area, time window, event type) into decision products.
 
-## Core Concept
+## Quick Reference
 
-Situation-agnostic specifications enable the same agent-orchestrated pipelines to handle any hazard type (flood, wildfire, storm) without bespoke logic.
+| Item | Location |
+|------|----------|
+| Bug fixes (check first!) | `FIXES.md` |
+| Roadmap & tasks | `ROADMAP.md` |
+| Agent memory | `.claude/agents/PROJECT_MEMORY.md` |
+| Active specs | `OPENSPEC.md` |
+| Completed specs | `docs/OPENSPEC_ARCHIVE.md` |
 
-## Architecture
+## Current Status
 
-- **OpenSpec**: JSON Schema + YAML for event, intent, data source, pipeline, and provenance specifications
-- **Data Broker**: Multi-source discovery with constraint evaluation, ranking, and open-source preference
-- **Analysis Layer**: Algorithm library with dynamic pipeline assembly and hybrid rule/ML selection
-- **Quality Control**: Automated sanity checks, cross-validation, consensus generation
+- **Core Platform:** Complete (170K+ lines, 518+ tests)
+- **P0 Bugs:** 4 remaining - **FIX THESE FIRST**
 
-## Key Files
+### P0 Bugs (from FIXES.md)
 
-- `OPENSPEC.md` - Complete system design specification
-- `ROADMAP.md` - Prioritized implementation roadmap with parallel work groups
-- `FIXES.md` - **Required bug fixes** with exact code changes (check before implementing new features)
+| ID | Issue | File |
+|----|-------|------|
+| FIX-003 | WCS duplicate dict key | `core/data/discovery/wms_wcs.py:379` |
+| FIX-004 | Hallucinated scipy API (grey_erosion) | `core/analysis/library/baseline/flood/hand_model.py:305` |
+| FIX-005 | Wrong distance_transform_edt usage | `core/analysis/library/baseline/flood/hand_model.py:378` |
+| FIX-006 | Broken schema $ref | `openspec/schemas/provenance.schema.json:112` |
 
-## Before Starting New Work
+### Work Streams (after bugs fixed)
 
-1. **Check FIXES.md** for any P0 (critical) bugs that must be fixed first
-2. **Check ROADMAP.md** for current progress and what can be parallelized
+1. **Image Validation** - Band validation before processing
+2. **Distributed Processing** - Dask parallelization for large rasters
+
+## Before Starting Work
+
+1. Check `FIXES.md` for P0 bugs
+2. Read `.claude/agents/PROJECT_MEMORY.md` for context
 3. Run tests: `./run_tests.py` or `./run_tests.py <category>`
 
-## Test Runner Shortcuts
+## Test Commands
 
 ```bash
-./run_tests.py                    # Run all tests
-./run_tests.py flood              # Flood tests only
-./run_tests.py wildfire           # Wildfire tests only
-./run_tests.py storm              # Storm tests only
-./run_tests.py schemas            # Schema validation tests
-./run_tests.py intent             # Intent resolution tests
-./run_tests.py --algorithm sar    # Specific algorithm (sar, ndwi, hand, dnbr, etc.)
-./run_tests.py wildfire --quick   # Skip slow tests
-./run_tests.py --list             # Show all categories
+./run_tests.py                    # All tests
+./run_tests.py flood              # Flood tests
+./run_tests.py wildfire           # Wildfire tests
+./run_tests.py schemas            # Schema tests
+./run_tests.py --algorithm sar    # Specific algorithm
+./run_tests.py --list             # Show categories
 ```
 
 ## Git Workflow
 
-**Push regularly after completing work.** The repo is configured for GitHub.
-
 ```bash
-# Load SSH keychain (required before push)
-source ~/.keychain/*-sh
-
-# Stage and commit
+source ~/.keychain/*-sh           # Load SSH keychain
 git add <files>
-git commit -m "$(cat <<'EOF'
-Short description of changes
-
-- Detail 1
-- Detail 2
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
-EOF
-)"
-
-# Push to GitHub
+git commit -m "Short description"
 git push origin main
 ```
 
-**Note:** Email is configured as `gpriceless@users.noreply.github.com` for GitHub privacy compliance.
-
-## Current Status
-
-- Groups A-E: Complete (schemas, validator, intent, data discovery, algorithms)
-- Group F: In progress (intelligent selection systems)
-- Groups G-L: Not started (ingestion, fusion, quality, agents, API, CLI)
-- Groups M-N: Planned (resilience/fallbacks, containerization)
-- **16 bugs documented** in FIXES.md (6 critical, 5 medium, 5 low priority)
+Email: `gpriceless@users.noreply.github.com`

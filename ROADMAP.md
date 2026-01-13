@@ -1,330 +1,213 @@
 # Multiverse Dive: Implementation Roadmap
 
-**Last Updated:** 2026-01-11
-**Status:** Core Platform Complete (170K+ lines), Production-Ready
+**Last Updated:** 2026-01-13
+**Status:** Core Platform Complete, ALL P0 BUGS FIXED - Production Ready
 
 ---
 
-## Executive Summary
+## Current Status
 
-The Multiverse Dive geospatial event intelligence platform is **functionally complete** with all core systems implemented and tested. The platform successfully transforms (area, time window, event type) into decision products using situation-agnostic specifications.
+### P0 Bug Fixes - COMPLETE
 
-**Current State:**
-- ✅ **82,776 lines** of core processing code (analysis, data, quality, resilience)
-- ✅ **53,294 lines** of comprehensive tests across 45 test files
-- ✅ **20,343 lines** of agent orchestration code
-- ✅ **13,109 lines** of API and CLI interfaces
-- ✅ **8 baseline algorithms** production-ready (flood, wildfire, storm detection)
-- ✅ **518+ passing tests** across all subsystems
-- ✅ **Deployment-ready** with Docker, Kubernetes, and cloud configurations
+All critical bugs have been resolved. The platform is production-ready.
 
----
+| Task | Bug ID | Description | File | Status |
+|------|--------|-------------|------|--------|
+| BUG-001 | FIX-003 | WCS duplicate dict key | `core/data/discovery/wms_wcs.py:374-382` | COMPLETE |
+| BUG-002 | FIX-004 | scipy grey_dilation (was grey_erosion) | `core/analysis/library/baseline/flood/hand_model.py:307` | COMPLETE |
+| BUG-003 | FIX-005 | distance_transform_edt tuple unpacking | `core/analysis/library/baseline/flood/hand_model.py:384-387` | COMPLETE |
+| BUG-004 | FIX-006 | processing_level schema definition | `openspec/schemas/common.schema.json:115-119` | COMPLETE |
 
-## Implementation History (Completed Work)
+**Details:** See `FIXES.md` for documentation of all fixes.
 
-### Phase 1: Foundation (COMPLETE)
-**When:** Initial implementation
-**What:** Core schemas, validation, event taxonomy
-- JSON Schema definitions (event, intent, datasource, pipeline, provenance, quality)
-- YAML event class definitions (flood, wildfire, storm taxonomies)
-- Schema validator with helpful error messages
-- Event class registry with hierarchical matching
-
-### Phase 2: Intelligence Layer (COMPLETE)
-**When:** Core development
-**What:** Intent resolution, data discovery, algorithm selection
-- NLP-based event classification with confidence scoring
-- Multi-provider data discovery (STAC, WMS/WCS, provider APIs)
-- 13 satellite/weather/DEM provider integrations
-- Constraint evaluation and multi-criteria ranking
-- Deterministic algorithm selection with reproducibility
-
-### Phase 3: Analysis Pipeline (COMPLETE)
-**When:** Core development
-**What:** Algorithm library, pipeline assembly, execution engine
-
-**Implemented Algorithms:**
-- Flood: SAR threshold, NDWI optical, change detection, HAND model
-- Wildfire: Thermal anomaly, dNBR burn severity, burned area classification
-- Storm: Wind damage assessment, structural damage analysis
-- Advanced: UNet segmentation, ensemble fusion (experimental)
-
-**Pipeline Infrastructure:**
-- DAG-based pipeline assembly with optimization
-- Parallel execution engine with checkpoint/recovery
-- Tiled processing for memory-constrained environments
-- Distributed execution framework (Dask/Ray ready)
-- Multi-sensor fusion with alignment and conflict resolution
-
-### Phase 4: Data Engineering (COMPLETE)
-**When:** Infrastructure build-out
-**What:** Ingestion, normalization, caching, persistence
-
-**Capabilities:**
-- Cloud-optimized format conversion (COG, Zarr, GeoParquet)
-- Spatial/temporal/resolution normalization
-- Streaming ingestion with resume support
-- Validation suite (integrity, anomaly, completeness)
-- Spatiotemporal caching with R-tree indexing
-- Lineage tracking with provenance.schema.json compliance
-
-### Phase 5: Quality & Resilience (COMPLETE)
-**When:** Production hardening
-**What:** Quality control, uncertainty quantification, fallback systems
-
-**Quality Control:**
-- Sanity checks (spatial coherence, temporal consistency, value plausibility, artifacts)
-- Cross-validation (multi-algorithm, multi-sensor, historical baselines)
-- Uncertainty propagation through pipelines
-- QA gating with pass/fail/review routing
-
-**Resilience:**
-- Sensor fallback chains (optical → SAR degradation, DEM fallback hierarchies)
-- Algorithm fallback strategies (missing baseline, data quality triggers)
-- Degraded mode operations (FULL → PARTIAL → MINIMAL → EMERGENCY)
-- Comprehensive failure logging with recovery strategies
-
-### Phase 6: Orchestration & Deployment (COMPLETE)
-**When:** Production readiness
-**What:** Agents, API, CLI, containerization
-
-**Agents:**
-- Orchestrator (event intake, delegation, state management)
-- Discovery (catalog search, dataset selection, acquisition)
-- Pipeline (assembly, execution, monitoring)
-- Quality (validation, review, reporting)
-- Reporting (product generation, multi-format output, delivery)
-
-**Interfaces:**
-- FastAPI REST API with full CRUD operations
-- CLI with incremental workflow support
-- Webhook notifications
-- Health checks and monitoring
-
-**Deployment:**
-- Docker multi-stage builds (API, worker, CLI containers)
-- Kubernetes manifests with HPA and persistent volumes
-- Cloud configurations (AWS ECS/Batch/Lambda, GCP Cloud Run, Azure ACI/AKS)
-- On-prem and edge device support (Raspberry Pi, NVIDIA Jetson)
-
----
-
-## Current Challenges
-
-### Challenge 1: Large Raster Processing on Laptops
-**Problem:**
-Earth observation files (Sentinel-2, Landsat) are often 500MB-5GB per scene. Current tiled processing (`tiled_runner.py`) works but is serial—slow on laptops and doesn't leverage multi-core CPUs efficiently.
-
-**Symptoms:**
-- A 100km² flood analysis with 10m Sentinel-2 takes 20-30 minutes on a laptop
-- Memory spikes above 4GB during ingestion despite tiling
-- No parallelization of tile processing across cores
-- Large COG downloads before processing starts
-
-### Challenge 2: No Distributed Raster Processing
-**Gap:**
-The platform has distributed execution scaffolding (Dask/Ray in `distributed.py`) but no integration with geospatial-native distributed systems. Processing 1000km² areas requires cloud infrastructure.
-
-**Desired State:**
-- Process large areas (1000km²+) on laptop by parallelizing across cores
-- Seamless scale to cluster for continental-scale analysis
-- Leverage distributed geospatial engines (Apache Sedona, GeoTrellis)
-- Stream raster tiles without downloading entire scenes
-
----
-
-## Next Phase: Distributed Raster Processing
-
-### Goals
-
-1. **Laptop-Scale Parallelization:** Process 1000km² analyses in <10 minutes on 8-core laptop
-2. **Cloud-Scale Distribution:** Process continental areas (100,000km²+) on Spark/Flink clusters
-3. **Streaming Ingestion:** Never download full scenes—stream only needed tiles
-4. **Transparent Scaling:** Same code runs on laptop or 100-node cluster
-
-### Technology Candidates
-
-| Technology | Pros | Cons | Use Case |
-|-----------|------|------|----------|
-| **Apache Sedona 1.5+** | 300+ spatial SQL functions, Spark/Flink/Snowflake support, proven raster processing | Requires Spark cluster for full power | Cloud-scale, SQL-friendly environments |
-| **GeoTrellis 3.x** | Native Scala/Spark, COG-native, tile-based architecture | Scala learning curve, smaller community | Large-scale tile processing |
-| **Dask + Rasterio** | Pure Python, existing Dask integration, windowed reads | Less geospatial-native than Sedona/GeoTrellis | Laptop-to-cluster Python workflows |
-| **GDAL Virtual Rasters** | Lightweight, no external dependencies, universal GDAL support | Limited parallelism, no cluster distribution | Laptop-only optimizations |
-
-**Recommendation:** **Apache Sedona** for distributed processing + **Dask-Rasterio** for local parallelization.
-
-**Rationale:**
-- Sedona provides Spark-based distribution for cloud scale
-- Dask-Rasterio keeps laptop workflows in pure Python
-- Both support COG streaming (read only needed regions)
-- Sedona's spatial SQL enables complex geospatial queries at scale
-
-### Architecture Changes Required
-
-```
-Current:                          Proposed:
-┌──────────────────┐             ┌──────────────────┐
-│ Event Spec       │             │ Event Spec       │
-└────────┬─────────┘             └────────┬─────────┘
-         │                                │
-         ▼                                ▼
-┌──────────────────┐             ┌──────────────────┐
-│ Data Discovery   │             │ Data Discovery   │
-└────────┬─────────┘             └────────┬─────────┘
-         │                                │
-         ▼                                ▼
-┌──────────────────┐             ┌──────────────────┐
-│ Download Full    │             │ Build Tile Index │◄── NEW
-│ Scenes to Disk   │             │ (Virtual Raster) │
-└────────┬─────────┘             └────────┬─────────┘
-         │                                │
-         ▼                                ▼
-┌──────────────────┐             ┌──────────────────┐
-│ Tiled Processing │             │ Execution Router │◄── NEW
-│ (Serial)         │             │ ├─ Local: Dask   │
-└────────┬─────────┘             │ └─ Cloud: Sedona │
-         │                       └────────┬─────────┘
-         │                                │
-         ▼                                ▼
-┌──────────────────┐             ┌──────────────────┐
-│ Analysis Results │             │ Distributed Tiles│◄── NEW
-└──────────────────┘             │ (Parallel Exec)  │
-                                 └────────┬─────────┘
-                                          │
-                                          ▼
-                                 ┌──────────────────┐
-                                 │ Streamed Results │
-                                 └──────────────────┘
+**Verification:**
+```bash
+pytest tests/test_data_providers.py -v          # BUG-001
+pytest tests/test_flood_algorithms.py -v        # BUG-002, BUG-003
+pytest tests/test_schemas.py -v                 # BUG-004
+./run_tests.py                                  # Full suite (518+ tests)
 ```
 
-### Implementation Roadmap
+---
 
-#### Phase 1: Local Parallelization (2-3 weeks)
-**Goal:** Make laptop processing 4-8x faster using local CPU cores
+## Available Work Streams (Can Run in Parallel)
 
-**Tasks:**
-1. **Virtual Raster Index** (`core/data/ingestion/virtual_index.py`)
-   - Build GDAL VRT from STAC query results
-   - Stream tiles via HTTP range requests (no full download)
-   - Track which tiles are needed for AOI
+The following work streams can now run in parallel:
 
-2. **Dask Tile Processor** (`core/analysis/execution/dask_tiled.py`)
-   - Replace serial `tiled_runner.py` with Dask parallelization
-   - Distribute tiles across local cores
-   - Memory-mapped intermediate results
+### Stream A: Image Validation - COMPLETE
 
-3. **Algorithm Adapters** (update existing algorithms)
-   - Add Dask array support to baseline algorithms
-   - Chunk-aware processing (overlap handling)
-   - Lazy evaluation with `.compute()` control
+Production-grade image validation for the ingestion workflow is now complete.
 
-4. **Execution Router** (`core/analysis/execution/router.py`)
-   - Auto-detect execution environment (laptop vs cloud)
-   - Route to serial/Dask/Sedona based on data size and resources
-   - Transparent fallback if distributed backend unavailable
+| Task ID | Description | Status |
+|---------|-------------|--------|
+| IV-A1 | Create validation module structure | COMPLETE |
+| IV-A2 | Define validation exceptions | COMPLETE |
+| IV-A3 | Create validation config schema | COMPLETE |
+| IV-A4 | Add validation settings to config | COMPLETE |
+| IV-B1 | Implement base ImageValidator class | COMPLETE |
+| IV-B2 | Implement OpticalBandValidator | COMPLETE |
+| IV-B3 | Implement SARValidator (speckle-aware) | COMPLETE |
+| IV-B4 | Implement ScreenshotGenerator | COMPLETE |
+| IV-C1 | Integrate with StreamingIngester | COMPLETE |
+| IV-C2 | Integrate with TiledAlgorithmRunner | COMPLETE |
+| IV-D1 | Unit tests for validation | COMPLETE |
+| IV-D2 | Integration tests | COMPLETE |
 
-**Deliverable:** Laptop processes 1000km² Sentinel-2 flood analysis in <10 minutes (currently 30+ minutes)
+**Implemented Files:**
+- `core/data/ingestion/validation/exceptions.py` - 10 exception types
+- `core/data/ingestion/validation/config.py` - Configuration with YAML/env support
+- `core/data/ingestion/validation/image_validator.py` - Main validator + dataclasses
+- `core/data/ingestion/validation/band_validator.py` - Optical band validation
+- `core/data/ingestion/validation/sar_validator.py` - SAR speckle-aware validation
+- `core/data/ingestion/validation/screenshot_generator.py` - Matplotlib screenshots
+- `config/ingestion.yaml` - Validation configuration
+- `tests/test_image_validation.py` - Unit tests
+- `tests/integration/test_validation_integration.py` - Integration tests
 
-#### Phase 2: Apache Sedona Integration (3-4 weeks)
-**Goal:** Enable cloud-scale distributed processing with Spark
+**Key Configuration Values:**
+- `std_dev_min`: 1.0 (optical), 2.0 (SAR dB)
+- `non_zero_ratio_min`: 0.05
+- `sample_ratio`: 0.3 (for images > 25M pixels)
+- `screenshot_retention`: temporary (delete after validation)
 
-**Tasks:**
-1. **Sedona Backend** (`core/analysis/execution/sedona_backend.py`)
-   - Spark session management
-   - Raster RDD creation from STAC catalogs
-   - Spatial partitioning for optimal distribution
+**Full Requirements:** `docs/PRODUCTION_IMAGE_VALIDATION_REQUIREMENTS.md`
 
-2. **Sedona Algorithm Wrappers** (`core/analysis/library/sedona/`)
-   - Port baseline algorithms to Sedona SQL/Python API
-   - Raster map algebra for NDWI, dNBR calculations
-   - Spatial joins for DEM-based HAND model
+### Stream B: Distributed Raster Processing - COMPLETE
 
-3. **Hybrid Execution** (`core/analysis/execution/hybrid.py`)
-   - Small jobs (<100 tiles): Dask local
-   - Medium jobs (100-1000 tiles): Dask distributed
-   - Large jobs (1000+ tiles): Sedona on Spark
+Enable parallel tile processing on laptops and cloud clusters.
 
-4. **Cloud Deployment** (`deploy/sedona/`)
-   - AWS EMR / Databricks configuration
-   - GCP Dataproc configuration
-   - Auto-scaling based on job size
+| Task ID | Description | Files | Status |
+|---------|-------------|-------|--------|
+| DP-1 | Virtual Raster Index | `core/data/ingestion/virtual_index.py` | COMPLETE |
+| DP-2 | Dask Tile Processor | `core/analysis/execution/dask_tiled.py` | COMPLETE |
+| DP-3 | Algorithm Dask Adapters | `core/analysis/execution/dask_adapters.py` | COMPLETE |
+| DP-4 | Execution Router | `core/analysis/execution/router.py` | COMPLETE |
+| DP-5 | Integration tests | `tests/test_dask_execution.py` | COMPLETE |
 
-**Deliverable:** Process 100,000km² continental flood analysis in <1 hour on Spark cluster
+**Implemented Files:**
+- `core/data/ingestion/virtual_index.py` - VirtualRasterIndex, STACVRTBuilder, TileAccessor
+- `core/analysis/execution/dask_tiled.py` - DaskTileProcessor, DaskProcessingConfig
+- `core/analysis/execution/dask_adapters.py` - DaskAlgorithmAdapter, wrap_algorithm_for_dask
+- `core/analysis/execution/router.py` - ExecutionRouter, auto_route, ResourceEstimator
+- `tests/test_dask_execution.py` - Comprehensive test suite
 
-#### Phase 3: Optimization & Production (2-3 weeks)
-**Goal:** Production-ready distributed processing with monitoring
+**Key Features:**
+- Automatic backend selection (serial -> tiled -> Dask local -> distributed)
+- Tile-level parallelization with configurable workers (4-8x speedup target)
+- Memory-efficient streaming for datasets larger than RAM
+- Algorithm adapters to wrap any existing algorithm for Dask
+- Progress tracking and callbacks
+- Multiple blend modes for tile stitching (feather, average, max, min)
 
-**Tasks:**
-1. **Performance Profiling**
-   - Benchmark Dask vs Sedona at different scales
-   - Identify bottlenecks (I/O, computation, serialization)
-   - Optimize tile sizes for memory vs network trade-off
+**Configuration Presets:**
+- `DaskProcessingConfig.for_laptop(memory_gb=4.0)` - Laptop with 4GB RAM
+- `DaskProcessingConfig.for_workstation(memory_gb=16.0)` - Workstation optimization
+- `DaskProcessingConfig.for_cluster(scheduler_address)` - Distributed cluster
 
-2. **Cost Optimization**
-   - Auto-shutdown idle Spark clusters
-   - Spot instance support
-   - Cache frequently accessed tiles (S3 → local SSD)
+**Full Specification:** `OPENSPEC.md` (Distributed Raster Processing section)
 
-3. **Monitoring & Observability**
-   - Distributed tracing for tile processing
-   - Progress reporting across workers
-   - Failed tile retry policies
+### Stream C: Distributed Processing - Cloud (Sedona) - COMPLETE
 
-4. **Documentation & Examples**
-   - Laptop quickstart guide
-   - Cloud deployment tutorials
-   - Cost estimation calculator
+Apache Sedona integration for continental-scale geospatial processing on Spark clusters.
 
-**Deliverable:** Production-ready distributed processing with <$1 per 1000km² analysis
+| Task ID | Description | Files | Status |
+|---------|-------------|-------|--------|
+| DP-C1 | Sedona Backend | `core/analysis/execution/sedona_backend.py` | COMPLETE |
+| DP-C2 | Sedona Adapters | `core/analysis/execution/sedona_adapters.py` | COMPLETE |
+| DP-C3 | Router Integration | `core/analysis/execution/router.py` | COMPLETE |
+| DP-C4 | Test Suite | `tests/test_sedona_execution.py` | COMPLETE |
+
+**Implemented Files:**
+- `core/analysis/execution/sedona_backend.py` - SedonaBackend, SedonaTileProcessor, SedonaConfig
+- `core/analysis/execution/sedona_adapters.py` - SedonaAlgorithmAdapter, AlgorithmSerializer, ResultCollector
+- `core/analysis/execution/router.py` - SEDONA/SEDONA_CLUSTER profiles, auto-selection for continental scale
+- `tests/test_sedona_execution.py` - Comprehensive test suite (unit, integration, performance)
+
+**Key Features:**
+- Continental-scale processing (100,000 km^2, 10,000+ tiles)
+- Apache Sedona raster functions (RS_FromGeoTiff, RS_Tile, RS_MapAlgebra)
+- Automatic Spark cluster detection and configuration
+- Mock mode for development without Spark installation
+- Graceful fallback to Dask when Spark unavailable
+- Algorithm adapters for flood, wildfire, and storm detection
+
+**Configuration Presets:**
+- `SedonaConfig.for_local_testing()` - Development mode
+- `SedonaConfig.for_cluster(master, num_executors)` - Production Spark cluster
+- `SedonaConfig.for_databricks(num_workers)` - Databricks integration
+
+**Execution Profiles:**
+- `ExecutionProfile.SEDONA` - Sedona local mode
+- `ExecutionProfile.SEDONA_CLUSTER` - Sedona on remote Spark cluster
+- `ExecutionProfile.CONTINENTAL` - Auto-select best backend for 10,000+ tiles
+
+**Performance Target:**
+- Process 100,000 km^2 in <1 hour
+- Scale across 10-100+ Spark executors
+- Handle 10,000+ tiles efficiently
 
 ---
 
-## Updated Success Metrics
+## Completed Work
 
-### Existing Metrics (Already Achieved ✅)
-- 518+ tests passing
-- All baseline algorithms validated with accuracy >75%
-- End-to-end workflows tested (Miami flood, NorCal wildfire)
-- Docker/Kubernetes deployment working
+### Implementation History
 
-### New Metrics (Distributed Processing)
-- [ ] Laptop: 1000km² analysis in <10 minutes (currently 30+ min)
-- [ ] Cloud: 100,000km² analysis in <1 hour
-- [ ] Memory: Peak <4GB on laptop regardless of AOI size
-- [ ] Cost: <$1 per 1000km² on AWS/GCP
-- [ ] Streaming: Zero full scene downloads (tile streaming only)
-- [ ] Parallelization: 80%+ CPU utilization on multi-core laptops
-- [ ] Scalability: Linear speedup up to 100 Spark workers
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Foundation (schemas, validation, taxonomy) | COMPLETE |
+| Phase 2 | Intelligence (intent, discovery, selection) | COMPLETE |
+| Phase 3 | Analysis Pipeline (algorithms, execution) | COMPLETE |
+| Phase 4 | Data Engineering (ingestion, caching) | COMPLETE |
+| Phase 5 | Quality & Resilience (QC, fallbacks) | COMPLETE |
+| Phase 6 | Orchestration & Deployment (agents, API) | COMPLETE |
 
----
+### Platform Metrics
 
-## Bug Status
+- **82,776 lines** of core processing code
+- **53,294 lines** of comprehensive tests
+- **20,343 lines** of agent orchestration code
+- **13,109 lines** of API and CLI interfaces
+- **8 baseline algorithms** production-ready
+- **518+ passing tests** across all subsystems
+- **Deployment-ready** with Docker, Kubernetes, and cloud configurations
 
-**Critical Bugs (P0):** 4 remaining (down from 16)
-- FIX-003: WCS duplicate dictionary key
-- FIX-004/005: HAND model scipy API issues
-- FIX-006: Broken schema $ref
+### Implemented Algorithms
 
-**Medium/Low Priority:** 10 remaining (non-blocking)
+**Flood:**
+- SAR threshold detection
+- NDWI optical detection
+- Change detection (pre/post)
+- HAND model (Height Above Nearest Drainage)
 
-**Recently Fixed:** 32 bugs fixed in last 48 hours (see FIXES.md)
+**Wildfire:**
+- Thermal anomaly detection
+- dNBR burn severity
+- Burned area classification
+
+**Storm:**
+- Wind damage assessment
+- Structural damage analysis
+
+**Advanced:**
+- UNet segmentation (experimental)
+- Ensemble fusion (experimental)
 
 ---
 
 ## Deployment Targets
 
-| Environment | Status | Notes |
-|-------------|--------|-------|
-| **Laptop** (4GB RAM) | ✅ Working | Tiled processing, serial execution |
-| **Workstation** (16GB RAM) | ✅ Working | Parallel tiles, Dask local cluster |
-| **Docker Compose** | ✅ Working | Full stack with workers |
-| **Kubernetes** | ✅ Working | HPA, persistent volumes |
-| **AWS Lambda** | ✅ Working | Serverless API |
-| **AWS ECS/Batch** | ✅ Working | Container-based processing |
-| **GCP Cloud Run** | ✅ Working | Serverless containers |
-| **Edge (Raspberry Pi)** | ✅ Working | ARM64 builds, lightweight mode |
-| **Spark Cluster** | 🚧 Planned | Apache Sedona integration |
-| **Dask Cluster** | 🚧 In Progress | Distributed tile processing |
+| Environment | Status |
+|-------------|--------|
+| Laptop (4GB RAM) | COMPLETE |
+| Workstation (16GB RAM) | COMPLETE |
+| Docker Compose | COMPLETE |
+| Kubernetes | COMPLETE |
+| AWS Lambda | COMPLETE |
+| AWS ECS/Batch | COMPLETE |
+| GCP Cloud Run | COMPLETE |
+| Edge (Raspberry Pi) | COMPLETE |
+| Spark Cluster | COMPLETE (Stream C) |
+| Dask Cluster | COMPLETE (Stream B) |
 
 ---
 
@@ -339,23 +222,7 @@ Current:                          Proposed:
 
 ---
 
-## Questions & Decisions
-
-### Open Questions
-1. **Sedona vs GeoTrellis?** → Recommend Sedona (better Python support, broader adoption)
-2. **Dask vs Ray for local?** → Dask (better geospatial ecosystem, rasterio integration)
-3. **Spark cluster hosting?** → AWS EMR for simplicity, Databricks for managed experience
-4. **Tile size optimization?** → TBD via profiling (likely 256x256 or 512x512 pixels)
-
-### Architecture Decisions Needed
-- [ ] Tile caching strategy: S3 vs local SSD vs memory
-- [ ] Spark session lifecycle: per-job vs persistent pool
-- [ ] Failure handling: retry tiles vs fail entire job
-- [ ] Progress reporting: polling vs push notifications
-
----
-
-## Getting Started (Current State)
+## Getting Started
 
 ```bash
 # Run tests
@@ -376,15 +243,14 @@ mdive run --event examples/flood_event.yaml --profile laptop
 
 ---
 
-## Next Steps
+## Agent Coordination
 
-1. **Fix remaining 4 P0 bugs** (1-2 days)
-2. **Implement Phase 1: Local Parallelization** (2-3 weeks)
-3. **Prototype Sedona integration** (1 week spike)
-4. **Benchmark and decide Dask vs Sedona threshold** (1 week)
-5. **Implement Phase 2: Sedona Integration** (3-4 weeks)
+See `.claude/agents/PROJECT_MEMORY.md` for:
+- Current project context and history
+- Active work groups and their status
+- Agent assignment tracking
+- Decision log
 
 ---
 
-**Last Review:** 2026-01-11
-**Next Review:** After distributed processing Phase 1 complete
+**Next Review:** After P0 bugs complete

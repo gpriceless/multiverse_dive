@@ -75,6 +75,9 @@ dev = [
     "pytest>=7.4.3",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.23.2",
+    "pytest-playwright>=0.7.0",
+    "playwright>=1.40.0",
+    "Pillow>=10.0.0",
     "black>=23.12.1",
     "ruff>=0.1.9",
     "mypy>=1.8.0",
@@ -122,6 +125,7 @@ markers = [
     "provider: marks data provider tests",
     "quality: marks quality control tests",
     "algorithm: marks algorithm-specific tests",
+    "e2e: marks end-to-end Playwright tests",
 ]
 
 [tool.black]

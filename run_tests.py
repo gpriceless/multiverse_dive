@@ -41,6 +41,7 @@ CATEGORIES = {
     "quick": {"marker": "not slow", "desc": "Fast tests only"},
     "slow": {"marker": "slow", "desc": "Slow/comprehensive tests"},
     "integration": {"marker": "integration", "desc": "Integration tests"},
+    "e2e": {"marker": "e2e", "path": "tests/e2e/", "desc": "Playwright E2E tile validation tests"},
 
     # All algorithms
     "algorithms": {"file": "test_*algorithms*.py", "desc": "All algorithm tests"},
@@ -72,7 +73,7 @@ def list_categories():
         print(f"    {name:12} - {CATEGORIES[name]['desc']}")
 
     print("\n  Test Types:")
-    for name in ["quick", "slow", "algorithms"]:
+    for name in ["quick", "slow", "algorithms", "e2e"]:
         print(f"    {name:12} - {CATEGORIES[name]['desc']}")
 
     print("\n  Algorithm Shortcuts (use with --algorithm):")
@@ -103,6 +104,7 @@ def build_pytest_args(args):
 
     markers = []
     file_patterns = []
+    test_path = None
     keyword = None
 
     # Process category
@@ -114,6 +116,8 @@ def build_pytest_args(args):
                 markers.append(cat_info["marker"])
             if "file" in cat_info:
                 file_patterns.append(cat_info["file"])
+            if "path" in cat_info:
+                test_path = project_root / cat_info["path"]
         else:
             # Try as a file pattern
             file_patterns.append(f"*{cat}*")
@@ -145,7 +149,10 @@ def build_pytest_args(args):
         pytest_args.extend(["-k", keyword])
 
     # Add file patterns or default to tests/
-    if file_patterns:
+    if test_path:
+        # Use specific test path from category
+        pytest_args.append(str(test_path))
+    elif file_patterns:
         for pattern in file_patterns:
             if "*" in pattern:
                 # Glob pattern

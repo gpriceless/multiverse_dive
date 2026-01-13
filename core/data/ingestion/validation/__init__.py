@@ -5,6 +5,7 @@ Provides comprehensive validation for ingested geospatial data:
 - Integrity: File format, checksum, header, and structure validation
 - Anomaly: Statistical outliers, spatial artifacts, and pattern detection
 - Completeness: Coverage analysis, gap detection, and metadata validation
+- Image: Band presence, content validation, CRS/bounds verification (NEW)
 
 Each validator follows a consistent pattern:
 - Config dataclass for validation options
@@ -17,12 +18,20 @@ Example:
         validate_integrity,
         detect_anomalies_from_file,
         validate_completeness_from_file,
+        ImageValidator,
+        validate_image,
     )
 
     # Quick validation
     integrity = validate_integrity("data.tif")
     anomalies = detect_anomalies_from_file("data.tif")
     completeness = validate_completeness_from_file("data.tif")
+
+    # Image validation (for production workflows)
+    validator = ImageValidator()
+    result = validator.validate("satellite_image.tif")
+    if not result.is_valid:
+        print(f"Validation failed: {result.errors}")
 
     # Combined validation
     from core.data.ingestion.validation import ValidationSuite
@@ -62,6 +71,41 @@ from core.data.ingestion.validation.completeness import (
     validate_completeness_from_file,
 )
 
+# Image validation (production workflow)
+from core.data.ingestion.validation.exceptions import (
+    BlankBandError,
+    BoundsError,
+    DimensionMismatchError,
+    ImageValidationError,
+    InvalidCRSError,
+    LoadError,
+    MissingBandError,
+    ResolutionError,
+    SARValidationError,
+    ValidationTimeoutError,
+)
+from core.data.ingestion.validation.config import (
+    ActionConfig,
+    AlertConfig,
+    OpticalThresholds,
+    PerformanceConfig,
+    SARThresholds,
+    ScreenshotConfig,
+    ValidationConfig,
+    load_config,
+)
+from core.data.ingestion.validation.image_validator import (
+    BandStatistics,
+    BandValidationResult,
+    ImageMetadata,
+    ImageValidationResult,
+    ImageValidator,
+    validate_image,
+)
+from core.data.ingestion.validation.band_validator import BandValidator
+from core.data.ingestion.validation.sar_validator import SARValidator, SARValidationResult
+from core.data.ingestion.validation.screenshot_generator import ScreenshotGenerator
+
 __all__ = [
     # Integrity
     "IntegrityCheckType",
@@ -94,6 +138,39 @@ __all__ = [
     # Combined
     "ValidationSuite",
     "ValidationSuiteResult",
+    # Image Validation (production workflow)
+    "ImageValidationError",
+    "MissingBandError",
+    "BlankBandError",
+    "InvalidCRSError",
+    "LoadError",
+    "BoundsError",
+    "ResolutionError",
+    "SARValidationError",
+    "DimensionMismatchError",
+    "ValidationTimeoutError",
+    # Config
+    "ValidationConfig",
+    "OpticalThresholds",
+    "SARThresholds",
+    "ScreenshotConfig",
+    "PerformanceConfig",
+    "ActionConfig",
+    "AlertConfig",
+    "load_config",
+    # Image Validator
+    "ImageValidator",
+    "ImageValidationResult",
+    "ImageMetadata",
+    "BandValidationResult",
+    "BandStatistics",
+    "validate_image",
+    # Band/SAR Validators
+    "BandValidator",
+    "SARValidator",
+    "SARValidationResult",
+    # Screenshot
+    "ScreenshotGenerator",
 ]
 
 

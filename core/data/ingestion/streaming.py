@@ -970,6 +970,52 @@ class StreamingIngester:
         self.config = config or StreamingConfig()
         self.temp_dir = Path(temp_dir) if temp_dir else Path.cwd() / ".streaming_temp"
         self._downloader = StreamingDownloader(config=self.config)
+        self._validator = None  # Lazy-loaded image validator
+        self._validation_enabled = True
+
+    @property
+    def validator(self):
+        """Lazy-load image validator to avoid import overhead when not needed."""
+        if self._validator is None and self._validation_enabled:
+            try:
+                from core.data.ingestion.validation import ImageValidator
+                self._validator = ImageValidator()
+            except ImportError:
+                logger.warning("Image validation module not available")
+                self._validation_enabled = False
+        return self._validator
+
+    def _validate_image(
+        self,
+        source_path: Path,
+        result: Dict[str, Any],
+        data_source_spec: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Validate downloaded image before processing.
+
+        Args:
+            source_path: Path to downloaded raster
+            result: Ingestion result dict to update
+            data_source_spec: Optional data source specification
+
+        Returns:
+            ImageValidationResult or None if validation disabled
+        """
+        if not self._validation_enabled or self.validator is None:
+            return None
+
+        try:
+            validation_result = self.validator.validate(
+                raster_path=source_path,
+                data_source_spec=data_source_spec,
+                dataset_id=result.get("source", str(source_path)),
+            )
+            return validation_result
+        except Exception as e:
+            logger.error(f"Image validation error for {source_path}: {e}")
+            # Return None to allow processing to continue if validation fails unexpectedly
+            return None
 
     def ingest(
         self,
@@ -1028,6 +1074,21 @@ class StreamingIngester:
                 source_path = temp_file
             else:
                 source_path = Path(source)
+
+            # NEW: Validate downloaded image before processing
+            validation_result = self._validate_image(source_path, result)
+            if validation_result is not None and not validation_result.is_valid:
+                result["status"] = "failed"
+                result["errors"].extend(validation_result.errors)
+                result["validation"] = validation_result.to_dict()
+                logger.error(f"Image validation failed for {source}: {validation_result.errors}")
+                return result
+
+            if validation_result is not None:
+                if validation_result.warnings:
+                    logger.warning(f"Image validation warnings for {source}: {validation_result.warnings}")
+                    result["validation_warnings"] = validation_result.warnings
+                result["validation"] = validation_result.to_dict()
 
             # Process tiles
             if tile_processor is not None:
