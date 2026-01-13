@@ -5,7 +5,9 @@
 # Connects to Redis for job queuing and coordinates with agent system.
 # =============================================================================
 
-FROM multiverse-dive-base:latest AS worker
+# Accept base image as build argument for CI/CD flexibility
+ARG BASE_IMAGE=multiverse-dive-base:latest
+FROM ${BASE_IMAGE} AS worker
 
 LABEL maintainer="Multiverse Dive Team"
 LABEL description="Background worker image for distributed processing"

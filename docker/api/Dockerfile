@@ -5,7 +5,9 @@
 # Exposes REST endpoints for event analysis and pipeline management.
 # =============================================================================
 
-FROM multiverse-dive-base:latest AS api
+# Accept base image as build argument for CI/CD flexibility
+ARG BASE_IMAGE=multiverse-dive-base:latest
+FROM ${BASE_IMAGE} AS api
 
 LABEL maintainer="Multiverse Dive Team"
 LABEL description="API service image with FastAPI and agent orchestration"
